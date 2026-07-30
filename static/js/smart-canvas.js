@@ -5311,6 +5311,11 @@ function setAssetLibraryFromResponse(data, options={}){
         renderAssetLibrary();
         if(mentionPicker?.classList?.contains('open') && mentionSource === 'asset') renderMentionPicker('asset');
     }
+    refreshShotAssetCollectorCandidates();
+}
+function refreshShotAssetCollectorCandidates(){
+    if(!canvas || !Array.isArray(nodes) || !nodes.some(node => node?.type === 'shot-asset-collector')) return;
+    render();
 }
 function toggleAssetLibrary(open=!assetLibraryOpen){
     if(!assetPanel || !assetToggle) return;
@@ -5689,6 +5694,7 @@ function localAssetFolderPath(){
 }
 function setLocalAssetLibraryFromResponse(data){
     localAssetLibrary = {items:Array.isArray(data.items) ? data.items : localAssetLibrary.items, tree:data.tree || localAssetLibrary.tree};
+    refreshShotAssetCollectorCandidates();
 }
 async function addFilesToLocalAssetLibrary(files=[]){
     const supported = [...(files || [])].filter(isSupportedUploadFile);
@@ -6548,18 +6554,22 @@ function shotAssetCollectorLibraryCandidates(collector){
     if(collector?.useAssetLibrary !== true || collector?.manualSelectionOnly !== false) return [];
     const refs = [];
     const seen = new Set();
-    assetCategories('image').forEach(cat => {
-        (cat.items || []).forEach((item, index) => {
-            if(!item?.url || seen.has(item.url)) return;
-            seen.add(item.url);
-            const img = assetNodeImageFromItem(item, cat.name || `asset-${index + 1}`);
-            refs.push({
-                ...img,
-                name:item.name || img.name || `\u8d44\u4ea7${refs.length + 1}`,
-                source:'library',
-                categoryName:cat.name || '',
-                asset_uris:assetRegisteredUris(item),
-                assetCandidateKey:`library|${item.id || item.url || index}`
+    assetLibraries().forEach(library => {
+        (library?.categories || []).filter(cat => (cat?.type || 'image') === 'image').forEach(cat => {
+            (cat.items || []).forEach((item, index) => {
+                const urlKey = canonicalReferenceUrl(item?.url || '') || item?.url || '';
+                if(!item?.url || assetMediaKind(item) !== 'image' || seen.has(urlKey)) return;
+                seen.add(urlKey);
+                const img = assetNodeImageFromItem(item, cat.name || `asset-${index + 1}`);
+                refs.push({
+                    ...img,
+                    name:item.name || img.name || `\u8d44\u4ea7${refs.length + 1}`,
+                    source:'library',
+                    libraryName:library?.name || '',
+                    categoryName:cat.name || '',
+                    asset_uris:assetRegisteredUris(item),
+                    assetCandidateKey:`library|${item.id || item.url || index}`
+                });
             });
         });
     });
@@ -6751,11 +6761,17 @@ function shotAssetPickerActiveDemand(collector){
 }
 function shotAssetPickerCandidateCategory(candidate){
     const assetName = [candidate?.name, candidate?.alias].filter(Boolean).join(' ');
-    const textValue = [candidate?.category, candidate?.assetRole, candidate?.categoryName, assetName].filter(Boolean).join(' ');
+    const metadata = [candidate?.category, candidate?.assetRole, candidate?.categoryName].filter(Boolean).join(' ');
+    const classificationName = assetName.replace(/(?:去掉|移除|删除|不要|不带|没有|无)\s*(?:背包|包|袋子|服装|衣服|外套|帽子|眼镜|道具)/gi, ' ');
+    const textValue = [metadata, classificationName].filter(Boolean).join(' ');
     // 先排除明确的服装、道具和风格资产，避免“婚礼迎宾牌”被“婚礼”误判成场景，
     // 也避免资产库分类名为“人物”时把外卖袋、手机等带入人物候选。
     const objectOrStyle = /迎宾牌|指示牌|标牌|立牌|牌子|外卖袋|外卖箱|手提袋|礼品袋|纸袋|包装袋|袋子|手机|戒指|花束|钥匙|文件|水杯|门票|电动车|自行车|摩托车|汽车|车辆|道具|服装|衣服|上衣|外套|裙装|婚纱(?!店)|西装|校服|工装|外卖服|造型|妆造|画风|风格参考|质感参考|style|look|mood/i;
-    if(objectOrStyle.test(assetName)) return '';
+    const characterView = /人物|角色|正脸|侧脸|三视图|四视图|多视图|特写|半身|全身|表情|面部|头像|character|person/i;
+    if(characterView.test(classificationName)) return 'character';
+    if(objectOrStyle.test(classificationName)) return '';
+    if(/场景|环境|空间|scene|location/i.test(metadata)) return 'scene';
+    if(/人物|角色|character|person/i.test(metadata)) return 'character';
     const guessed = smartAssetCategoryForText(textValue);
     if(guessed === 'scene') return 'scene';
     if(['wardrobe','prop','style'].includes(guessed) || objectOrStyle.test(textValue)) return '';
