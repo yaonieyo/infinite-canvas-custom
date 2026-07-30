@@ -1,0 +1,35 @@
+# Private credentials
+API/.env
+.env
+.env.*
+*.key
+*.pem
+
+# Local canvas data and generated media
+data/
+assets/
+output/
+logs/
+history.json
+
+# Local backups and bundled runtime
+backup/
+python/
+
+# Generated CLI output
+CLI/windows/openai/output/
+
+# Python and application caches
+__pycache__/
+*.py[cod]
+*.log
+*.tmp
+*.bak
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+

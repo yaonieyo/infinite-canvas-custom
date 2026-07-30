@@ -1,0 +1,14 @@
+{
+  "version": "2026.07.12",
+  "updated_at": "2026-07-12T15:27:36+08:00",
+  "items": [
+    {
+      "type": "feature",
+      "text": "修复自动尺寸无效bug"
+    },
+    {
+      "type": "feature",
+      "text": "PS插件新增选区编辑"
+    }
+  ]
+}
