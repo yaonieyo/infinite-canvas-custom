@@ -2144,17 +2144,30 @@ function smartStoryboardOutputNodeBodyHtml(node){
 function configureStoryboardOutputNode(target, source, prompt, settingsPatch, kind){
     const cleanPrompt = String(prompt || '').trim();
     if(!target || !source || !cleanPrompt) return false;
-    target.title = `${source.shot?.shotNumber || '镜头'} ${kind === 'video' ? '视频' : kind === 'frame-preview' ? '预演图' : '整段故事板'}`;
+    const title = `${source.shot?.shotNumber || '镜头'} ${kind === 'video' ? '视频' : kind === 'frame-preview' ? '预演图' : '整段故事板'}`;
+    target.title = title;
     target.storyboardSourceCardId = source.id;
     target.storyboardOutputKind = kind;
-    target.runSettings = cloneSmartSettings(settingsPatch);
+    target.runSettings = typeof posterFrameNormalizedRunSettings === 'function' && kind !== 'video'
+        ? posterFrameNormalizedRunSettings(settingsPatch)
+        : cloneSmartSettings(settingsPatch);
     const refs = smartStoryboardReferenceImagesFor(source, cleanPrompt);
     target.manualInputRefs = refs;
     target.runPromptRefs = refs;
     target.runInputRefs = refs;
-    target.w = Math.max(Number(target.w) || 0, 560);
-    target.h = Math.max(Number(target.h) || 0, kind === 'video' ? 620 : 650);
-    setPromptDraftForNode(target, cleanPrompt);
+    if(kind !== 'video'){
+        target.type = 'smart-frame';
+        target.frameTitle = title;
+        target.prompt = cleanPrompt;
+        target.sizeHint = storyboardOutputKindLabel(kind);
+        target.images = Array.isArray(target.images) ? target.images : [];
+        target.w = Math.max(Number(target.w) || 0, 560);
+        target.h = Math.max(Number(target.h) || 0, 650);
+    } else {
+        target.w = Math.max(Number(target.w) || 0, 560);
+        target.h = Math.max(Number(target.h) || 0, 620);
+        setPromptDraftForNode(target, cleanPrompt);
+    }
     target.runPrompt = cleanPrompt;
     target.promptOriginalText = cleanPrompt;
     return true;
@@ -2398,7 +2411,7 @@ function createSmartVideoFromStoryboardShot(cardId){
     const previewCount = (canvas?.connections || [])
         .filter(c => c.from === source.id)
         .map(c => nodes.find(n => n.id === c.to))
-        .filter(n => isSmartRunnableNode(n)).length;
+        .filter(n => isSmartRunnableNode(n) || n?.type === 'smart-frame').length;
     const baseX = Number(source.x || 0);
     const baseY = Number(source.y || 0) + Math.max(Number(source.h || 600), 600) + 120 + previewCount * 44;
     const target = createNode(baseX, baseY, []);
@@ -2445,12 +2458,14 @@ function createSmartPreviewFromStoryboardShot(cardId, requestedPanelCount=9, req
     const previewCount = (canvas?.connections || [])
         .filter(c => c.from === source.id)
         .map(c => nodes.find(n => n.id === c.to))
-        .filter(n => isSmartRunnableNode(n)).length;
+        .filter(n => isSmartRunnableNode(n) || n?.type === 'smart-frame').length;
     const baseX = Number(source.x || 0);
     const baseY = Number(source.y || 0) + Math.max(Number(source.h || 600), 600) + 120 + previewCount * 44;
     const target = createNode(baseX, baseY, []);
     configureStoryboardOutputNode(target, source, prompt, imageSettings, 'whole-preview');
     target.title = `${source.shot?.shotNumber || '镜头'} ${previewStyle === 'realistic' ? '写实' : '导演'}${panelCount === 12 ? '十二宫格' : '九宫格'}分镜`;
+    target.frameTitle = target.title;
+    target.sizeHint = '整段故事板';
     target.storyboardGridCount = panelCount;
     target.storyboardPreviewStyle = previewStyle;
     target.storyboardImagePrompt = prompt;
@@ -2493,12 +2508,14 @@ function createSmartPreviewFromStoryboardFrame(cardId, frameIndex){
     const previewCount = (canvas?.connections || [])
         .filter(c => c.from === source.id)
         .map(c => nodes.find(n => n.id === c.to))
-        .filter(n => isSmartRunnableNode(n)).length;
+        .filter(n => isSmartRunnableNode(n) || n?.type === 'smart-frame').length;
     const baseX = Number(source.x || 0);
     const baseY = Number(source.y || 0) + Math.max(Number(source.h || 600), 600) + 120 + previewCount * 44;
     const target = createNode(baseX, baseY, []);
     configureStoryboardOutputNode(target, source, prompt, imageSettings, 'frame-preview');
     target.title = `${source.shot?.shotNumber || '镜头'} ${frame.label || `F${index + 1}`} 预演图`;
+    target.frameTitle = target.title;
+    target.sizeHint = '预演图';
     target.storyboardFrameIndex = index;
     selectedId = target.id;
     selectedIds = [];
@@ -3496,18 +3513,31 @@ function createShotAssetPromptNode(collector, demandKey){
     const prompt = String(record?.current || '').trim();
     if(!collector || !demand || !prompt){ toast('资产提示词为空'); return null; }
     const demandIndex = Math.max(0, shotAssetCollectorDemands(collector).findIndex(item => item.key === demand.key));
-    const target = createNode(Number(collector.x || 0) + Math.max(Number(collector.w || 560), 560) + 120, Number(collector.y || 0) + demandIndex * 46, []);
-    target.title = `${demand.label} ${shotAssetPickerCategoryLabel(shotAssetDemandCategory(demand))}资产`;
+    const title = `${demand.label} ${shotAssetPickerCategoryLabel(shotAssetDemandCategory(demand))}资产`;
+    const target = createPosterFrameNode(
+        Number(collector.x || 0) + Math.max(Number(collector.w || 560), 560) + 120,
+        Number(collector.y || 0) + demandIndex * 46,
+        {
+            title,
+            prompt,
+            sizeHint:'资产生图',
+            runSettings:smartStoryboardImageSettingsFor(),
+            w:560,
+            h:650,
+            select:false
+        }
+    );
+    target.title = title;
+    target.frameTitle = title;
     target.storyboardOutputKind = 'asset-image';
     target.assetDemandKey = demand.key;
     target.assetPromptSourceCollectorId = collector.id;
     const ai = promptOptimizationConfigForCollector(collector);
     target.promptOptimizeProvider = ai.provider;
     target.promptOptimizeModel = ai.model;
-    target.runSettings = cloneSmartSettings(smartStoryboardImageSettingsFor());
+    target.runSettings = posterFrameNormalizedRunSettings(smartStoryboardImageSettingsFor());
     target.promptOriginalText = prompt;
     target.promptUserLocked = false;
-    setPromptDraftForNode(target, prompt);
     target.runPrompt = prompt;
     addConnection(collector.id, target.id, 'flow');
     selectedId = target.id;
@@ -3515,15 +3545,82 @@ function createShotAssetPromptNode(collector, demandKey){
     selectedImage = {nodeId:'', index:-1};
     settings = {...settings, ...cloneSmartSettings(target.runSettings)};
     render();
-    updateComposer();
-    setPromptText(prompt);
-    setPromptDraftForNode(target, prompt);
     renderDynamicParams();
     renderInputThumbsRow(target);
-    promptInput?.focus({preventScroll:true});
     scheduleSave();
     toast(`已创建“${demand.label}”资产生图节点`);
     return target;
+}
+
+function storyboardFrameTitleFromPrompt(node, fallback=''){
+    const prompt = String(node?.prompt || node?.runPrompt || node?.promptDraftText || '').trim();
+    const kind = String(node?.storyboardOutputKind || '');
+    if(kind === 'asset-image'){
+        const assetMatch = prompt.match(/(?:人物|场景|道具|服装)?资产图\s*[：:]\s*([^。；，,\n]{1,24})/);
+        if(assetMatch?.[1]) return `${assetMatch[1].trim()} 资产生图`;
+    }
+    return String(fallback || '').trim();
+}
+
+function migrateLegacyStoryboardImageOutputFrames(){
+    if(!Array.isArray(nodes)) return false;
+    let changed = false;
+    nodes.forEach(node => {
+        if(!node || !node.storyboardOutputKind || node.storyboardOutputKind === 'video') return;
+        const prompt = String(node.runPrompt || node.promptDraftText || node.promptOriginalText || '').trim();
+        const hasResult = Array.isArray(node.images) && node.images.some(img => img?.url);
+        if(!prompt && !hasResult) return;
+        const kind = node.storyboardOutputKind;
+        const rawTitle = String(node.frameTitle || node.title || '').trim();
+        const genericTitle = !rawTitle || ['Image', '故事板 资产生图', '资产生图'].includes(rawTitle);
+        const title = !genericTitle
+            ? rawTitle
+            : storyboardFrameTitleFromPrompt(node, storyboardOutputDisplayTitle(node));
+        if(node.type === 'smart-frame'){
+            if(title && title !== rawTitle){
+                node.title = title;
+                node.frameTitle = title;
+                changed = true;
+            }
+            return;
+        }
+        if(node.type !== 'smart-image') return;
+        const finalTitle = String(title || '').trim() && title !== 'Image'
+            ? String(title).trim()
+            : storyboardOutputDisplayTitle(node);
+        const refs = storyboardOutputReferenceImages(node);
+        node.type = 'smart-frame';
+        node.title = finalTitle;
+        node.frameTitle = finalTitle;
+        node.prompt = prompt;
+        node.sizeHint = storyboardOutputKindLabel(kind);
+        node.runSettings = typeof posterFrameNormalizedRunSettings === 'function'
+            ? posterFrameNormalizedRunSettings(node.runSettings || smartStoryboardImageSettingsFor())
+            : cloneSmartSettings(node.runSettings || smartStoryboardImageSettingsFor());
+        node.manualInputRefs = refs;
+        node.runPromptRefs = refs;
+        node.runInputRefs = refs;
+        node.runPrompt = prompt;
+        node.promptOriginalText = String(node.promptOriginalText || prompt || '').trim();
+        node.w = Math.max(Number(node.w) || 0, 560);
+        node.h = Math.max(Number(node.h) || 0, 650);
+        changed = true;
+    });
+    if(changed){
+        render();
+        scheduleSave();
+    }
+    return changed;
+}
+
+function scheduleLegacyStoryboardFrameMigration(){
+    let attempts = 0;
+    const tick = () => {
+        attempts += 1;
+        if(migrateLegacyStoryboardImageOutputFrames()) return;
+        if(attempts < 12) setTimeout(tick, 350);
+    };
+    setTimeout(tick, 0);
 }
 
 function applyPromptVersionToNode(node, text){
@@ -3768,6 +3865,8 @@ Object.assign(window, {
   requestPromptOptimization,
   optimizeShotAssetPrompt,
   createShotAssetPromptNode,
+  migrateLegacyStoryboardImageOutputFrames,
+  scheduleLegacyStoryboardFrameMigration,
   applyPromptVersionToNode,
   promptOptimizationVideoProfileLabel,
   inferPromptOptimizationVideoProfile,
@@ -3776,6 +3875,8 @@ Object.assign(window, {
   renderComposerPromptTools,
   optimizeCurrentComposerPrompt,
 });
+
+scheduleLegacyStoryboardFrameMigration();
 
 promptOptimizeBtn?.addEventListener('click', event => {
     event.preventDefault();
