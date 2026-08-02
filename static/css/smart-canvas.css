@@ -496,6 +496,14 @@ video.node-img { object-fit:cover; background:#0f172a; }
 .connection-layer .conn-hit { pointer-events:stroke; cursor:pointer; }
 .connection-layer .conn-cut { pointer-events:auto; cursor:pointer; opacity:.55; transition:opacity .14s ease; }
 .connection-layer .conn-cut:hover { opacity:1; }
+.shell.connection-erasing, .shell.connection-erasing .connection-layer .conn-hit, .shell.connection-erasing .connection-layer .conn-cut { cursor:crosshair !important; }
+.connection-layer .conn-erasing-mark.conn-line { stroke:#ef4444 !important; opacity:.42 !important; stroke-dasharray:4 5; }
+.connection-layer .conn-erasing-mark.conn-end { fill:#ef4444 !important; opacity:.36 !important; }
+.connection-layer .conn-erasing-mark.conn-cut { opacity:.28 !important; }
+.connection-erase-trail { position:absolute; inset:0; z-index:24; width:100%; height:100%; pointer-events:none; overflow:visible; opacity:1; transition:opacity .18s ease; }
+.connection-erase-trail.fading { opacity:0; }
+.connection-erase-trail-glow { stroke:rgba(239,68,68,.22); stroke-width:13; stroke-linecap:round; stroke-linejoin:round; }
+.connection-erase-trail-line { stroke:rgba(239,68,68,.92); stroke-width:2.4; stroke-linecap:round; stroke-linejoin:round; stroke-dasharray:7 5; }
 .connection-layer .conn-pending { stroke-dasharray:5 4; animation:dash-flow-pending .9s linear infinite; }
 .connection-layer .conn-cascade { filter:none; }
 .connection-layer .conn-cascade-wait { stroke-dasharray:7 6; opacity:.58; }

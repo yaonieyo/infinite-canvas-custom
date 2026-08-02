@@ -566,6 +566,37 @@ body.studio-theme-dark .rh-prompt-field textarea,
 .gen-settings-row .quality-select { flex:1 1 76px; min-width:68px; }
 .gen-settings-row .field { flex:1; min-width:0; }
 .gen-settings-row.api-size-row .gen-count-row { margin-left:auto; }
+.midjourney-body { --mj-accent:#b45309; }
+.midjourney-input-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:7px; color:var(--faint); font-size:10px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+.midjourney-input-head span:last-child { color:var(--muted); font-weight:700; letter-spacing:0; text-transform:none; }
+.mj-settings { margin-top:10px; margin-bottom:9px; }
+.mj-settings .select-lite { flex:1; min-width:0; }
+.mj-task-line { min-height:28px; display:flex; align-items:center; gap:6px; padding:0 9px; border:1px solid var(--line); border-radius:10px; color:var(--faint); background:var(--soft); font-size:10.5px; font-weight:750; overflow:hidden; }
+.mj-task-line.ready { border-color:rgba(180,83,9,.28); background:rgba(245,158,11,.10); color:#92400e; }
+.mj-task-line i,.mj-task-line svg { width:13px; height:13px; flex:0 0 auto; }
+.mj-task-line span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.mj-actions { display:flex; flex-direction:column; gap:6px; margin-top:9px; padding:9px; border:1px solid rgba(180,83,9,.18); border-radius:12px; background:rgba(245,158,11,.06); }
+.mj-action-title { color:var(--muted); font-size:10px; font-weight:850; }
+.mj-action-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:5px; }
+.mj-text-action-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:5px; }
+.mj-pan-grid { display:grid; grid-template-columns:repeat(4, minmax(0, 1fr)); gap:5px; }
+.mj-action-grid button,.mj-text-action-grid button,.mj-pan-grid button,.mj-reroll { height:29px; border:1px solid var(--line); border-radius:8px; background:var(--card-solid); color:var(--text); font-size:10.5px; font-weight:850; }
+.mj-pan-grid button { display:flex; align-items:center; justify-content:center; }
+.mj-pan-grid button i,.mj-pan-grid button svg { width:14px; height:14px; }
+.mj-action-grid button:hover,.mj-text-action-grid button:hover,.mj-pan-grid button:hover,.mj-reroll:hover { border-color:#b45309; color:#92400e; background:#fffbeb; }
+.mj-reroll { display:flex; align-items:center; justify-content:center; gap:5px; }
+.mj-reroll i,.mj-reroll svg { width:13px; height:13px; }
+.mj-modal-panel { display:flex; flex-direction:column; gap:7px; margin-top:9px; padding:9px; border:1px solid rgba(2,132,199,.26); border-radius:12px; background:rgba(14,165,233,.06); }
+.mj-modal-prompt { width:100%; min-height:58px; resize:vertical; padding:8px; border:1px solid var(--line); border-radius:8px; outline:none; background:var(--card-solid); color:var(--text); font-size:11px; line-height:1.45; }
+.mj-modal-mask { min-height:27px; display:flex; align-items:center; gap:6px; padding:0 8px; border:1px solid var(--line); border-radius:8px; color:var(--faint); background:var(--soft); font-size:10px; font-weight:750; }
+.mj-modal-mask.ready { color:#0369a1; border-color:rgba(2,132,199,.26); background:rgba(14,165,233,.10); }
+.mj-modal-mask i,.mj-modal-mask svg { width:13px; height:13px; flex:0 0 auto; }
+.mj-modal-mask span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.theme-dark .mj-task-line.ready { color:#fcd34d; background:rgba(180,83,9,.18); }
+.theme-dark .mj-actions { background:rgba(180,83,9,.10); }
+.theme-dark .mj-modal-panel { background:rgba(2,132,199,.13); }
+.theme-dark .mj-modal-mask.ready { color:#7dd3fc; }
+.theme-dark .mj-action-grid button:hover,.theme-dark .mj-text-action-grid button:hover,.theme-dark .mj-pan-grid button:hover,.theme-dark .mj-reroll:hover { color:#fcd34d; background:rgba(180,83,9,.22); }
 .setting-title { color:var(--faint); font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.08em; }
 .setting-input { width:100%; height:32px; border:1px solid var(--line-2); border-radius:12px; background:var(--card-solid); color:var(--text); outline:none; padding:0 10px; font-size:12px; font-weight:700; }
 .comfy-random-field { display:grid; grid-template-columns:minmax(0,1fr) 34px; gap:7px; align-items:end; width:100%; }
