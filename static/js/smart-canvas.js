@@ -13198,6 +13198,10 @@ function toggleInputRefBlocked(node, img){
 }
 function defaultReferenceImagesFor(node, consume=false, ctx=smartLoopContext){
     if(!node) return [];
+    const dedupeReferences = refs => (node.type === 'image-prompt-card' || node.type === 'storyboard-card')
+        && typeof window.storyboardUniqueRefs === 'function'
+        ? window.storyboardUniqueRefs(refs)
+        : uniqueReferenceImages(refs);
     let storyboardRefs = [];
     if((node.type === 'image-prompt-card' || node.type === 'storyboard-card') && typeof window.smartStoryboardReferenceImagesFor === 'function'){
         const source = node.type === 'image-prompt-card' && typeof window.smartImagePromptSourceVisualCard === 'function'
@@ -13209,9 +13213,9 @@ function defaultReferenceImagesFor(node, consume=false, ctx=smartLoopContext){
     const upstream = (smartImageUsesWorkflowInput(node, ctx) ? workflowInputImagesFor(node, consume, ctx) : inputImagesFor(node, consume, ctx))
         .filter(img => img?.url);
     const manual = manualReferenceImagesFor(node);
-    if(smartImageUsesWorkflowInput(node, ctx)) return uniqueReferenceImages([...storyboardRefs, ...upstream, ...manual]);
-    if(self.length) return uniqueReferenceImages([...storyboardRefs, ...self, ...upstream, ...manual]);
-    return uniqueReferenceImages([...storyboardRefs, ...upstream, ...manual]);
+    if(smartImageUsesWorkflowInput(node, ctx)) return dedupeReferences([...storyboardRefs, ...upstream, ...manual]);
+    if(self.length) return dedupeReferences([...storyboardRefs, ...self, ...upstream, ...manual]);
+    return dedupeReferences([...storyboardRefs, ...upstream, ...manual]);
 }
 function lineConnectionsFor(node){
     if(!node) return [];

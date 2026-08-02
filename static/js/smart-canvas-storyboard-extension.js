@@ -39,6 +39,48 @@ function referenceImageDedupeKeys(img){
     return keys;
 }
 
+function storyboardReferenceCategory(img){
+    const raw = [
+        img?.referenceCategory,
+        img?.demandType,
+        img?.assetRole,
+        img?.category,
+        img?.categoryName,
+        img?.purpose,
+        img?.role
+    ].map(value => String(value || '').toLowerCase()).join('|');
+    if(raw.includes('scene') || raw.includes('\u573a\u666f')) return 'scene';
+    if(raw.includes('character') || raw.includes('\u4eba\u7269') || raw.includes('\u89d2\u8272')) return 'character';
+    if(raw.includes('prop') || raw.includes('object') || raw.includes('\u9053\u5177')) return 'prop';
+    return '';
+}
+
+function storyboardSceneReferenceKey(img){
+    if(storyboardReferenceCategory(img) !== 'scene') return '';
+    const semanticCandidates = [
+        img?.referenceSceneKey,
+        img?.sceneName,
+        img?.sceneLabel,
+        img?.demandLabel,
+        img?.sourceScene,
+        img?.categoryName,
+        img?.assetLabel
+    ].map(value => String(value || '').trim()).filter(Boolean);
+    for(const candidate of semanticCandidates){
+        const canonical = typeof shotAssetSceneCanonicalName === 'function'
+            ? shotAssetSceneCanonicalName(candidate)
+            : '';
+        if(canonical && !/^\u5ba4\u5185$|^\u5ba4\u5916$/u.test(canonical)) return `scene|${smartMentionKey(canonical)}`;
+    }
+    const semantic = semanticCandidates.find(value => !/^(?:gpt[_ -]?image|image|\u56fe\u7247|\u53c2\u8003\u56fe|\u8d44\u4ea7|\u672a\u547d\u540d)$/i.test(value));
+    if(semantic) return `scene|${smartMentionKey(semantic)}`;
+    const demandKey = String(img?.demandKey || '').trim();
+    if(/^scene[:|]/i.test(demandKey)) return `scene-demand|${smartMentionKey(demandKey)}`;
+    const fallbackCandidates = [img?.name, img?.alias].map(value => String(value || '').trim()).filter(Boolean);
+    const explicit = fallbackCandidates.find(value => !/^(?:gpt[_ -]?image|image|\u56fe\u7247|\u53c2\u8003\u56fe|\u8d44\u4ea7|\u672a\u547d\u540d)$/i.test(value));
+    return explicit ? `scene|${smartMentionKey(explicit)}` : '';
+}
+
 function storyboardMediaKindForItem(img){
     if(typeof mediaKindForItem === 'function') return mediaKindForItem(img);
     if(img?.kind) return img.kind;
@@ -49,18 +91,50 @@ function storyboardMediaKindForItem(img){
 }
 
 function storyboardUniqueRefs(images){
-    if(typeof uniqueReferenceImages === 'function') return uniqueReferenceImages(images);
     const refs = [];
-    const seen = new Set();
+    const seenUrls = new Set();
+    const seenIdentity = new Set();
+    const seenSemantic = new Map();
+    const seenScene = new Map();
+    const genericNames = new Set(['参考图', '图片', '资产', '未命名资产']);
+    const semanticKey = img => {
+        const name = smartMentionKey(img?.name || img?.alias || '');
+        const category = smartMentionKey(img?.categoryName || img?.purpose || '');
+        if(!name || genericNames.has(name)) return '';
+        return `name|${name}|${category}`;
+    };
+    const isCollectorRef = img => Boolean(img?.fromShotAssetCollector || img?.manualStoryboardAsset);
     (images || []).forEach((img, index) => {
-        if(!img?.url || seen.has(img.url)) return;
-        seen.add(img.url);
+        if(!img?.url || seenUrls.has(img.url)) return;
+        const identityKeys = referenceImageDedupeKeys(img);
+        if(identityKeys.some(key => seenIdentity.has(key))) return;
+        identityKeys.forEach(key => seenIdentity.add(key));
+        const sceneKey = storyboardSceneReferenceKey(img);
+        const previousSceneIndex = sceneKey ? seenScene.get(sceneKey) : undefined;
+        if(previousSceneIndex !== undefined){
+            const previousScene = refs[previousSceneIndex];
+            if(isCollectorRef(img) && !isCollectorRef(previousScene)) refs[previousSceneIndex] = {...img};
+            seenUrls.add(img.url);
+            return;
+        }
+        const semantic = semanticKey(img);
+        const previousIndex = semantic ? seenSemantic.get(semantic) : undefined;
+        if(previousIndex !== undefined){
+            const previous = refs[previousIndex];
+            // 资产收集器绑定是用户明确选择的来源，优先于同名的缓存/全局搜索结果。
+            if(isCollectorRef(img) && !isCollectorRef(previous)) refs[previousIndex] = {...img};
+            seenUrls.add(img.url);
+            return;
+        }
+        seenUrls.add(img.url);
         refs.push({
             ...img,
             name:img.name || img.alias || `图${refs.length + 1}`,
             role:img.role || `image_${refs.length + 1}`,
             imageIndex:Number.isFinite(Number(img.imageIndex)) ? Number(img.imageIndex) : index
         });
+        if(semantic) seenSemantic.set(semantic, refs.length - 1);
+        if(sceneKey) seenScene.set(sceneKey, refs.length - 1);
     });
     return refs;
 }
@@ -219,6 +293,10 @@ function createShotAssetCollectorNode(x, y, options={}){
         title:'故事板人物收集器',
         assetMatchSort:'desc',
         assetIdentityAliases:{},
+        sceneRegistry:[],
+        sceneAssignments:{},
+        sceneAnalysisSignature:'',
+        sceneAnalysisRunning:false,
         shotAssetBindings:{},
         shotAssetNoAsset:{},
         continuityOverrides:{},
@@ -363,6 +441,81 @@ function smartStoryboardAssetText(shot, extra=''){
     return [shot?.shotNumber, shot?.timeRange, shot?.shotSize, shot?.cameraType, shot?.focalLength, shot?.subjects, shot?.emotionChange, shot?.cameraMove, shot?.sourceText, shot?.audio, shot?.transition, visual, frames, extra].filter(Boolean).join('\n');
 }
 
+const SHOT_ASSET_SCENE_SPECIFIC_RULES = [
+    ['出租屋', /出租屋|租住的房间|租房室内/],
+    ['婚礼现场', /婚礼现场|婚礼大厅|婚宴现场|婚礼会场/],
+    ['婚纱店', /婚纱店|婚纱门店|婚纱试衣间/],
+    ['酒店', /酒店大堂|酒店房间|酒店走廊|酒店/],
+    ['餐厅', /餐厅|饭店包间|餐馆/],
+    ['办公室', /办公室|办公区|会议室/],
+    ['电梯间', /电梯间|电梯内部|电梯里/],
+    ['走廊', /走廊|过道|楼道/],
+    ['车内', /车内|汽车内部|出租车内|电动车上/],
+    ['街道', /街道|马路|城市夜路|城市街头/],
+    ['小区', /小区|居民楼下|住宅区/],
+    ['门口', /门口|门外|入口处/]
+];
+
+function shotAssetSceneCanonicalName(value){
+    const text = String(value || '').trim();
+    if(!text) return '';
+    for(const [label, pattern] of SHOT_ASSET_SCENE_SPECIFIC_RULES){
+        if(pattern.test(text)) return label;
+    }
+    if(/室内|房间|室内空间|室内场景|会面空间/.test(text)) return '室内';
+    if(/室外|户外|外景|露天/.test(text)) return '室外';
+    return '';
+}
+
+function shotAssetSceneLooksLikePhysicalLocation(value){
+    const text = String(value || '').trim();
+    if(!text || /鸡蛋|泡面|方便面|碗|风扇|窗户|地面|地板|桌面|椅子|手机|袋子|外卖|花束|迎宾牌|道具|食物|餐具|家具|生活环境|服装|衣服|情绪|动作|台词|人物/.test(text)) return false;
+    return Boolean(shotAssetSceneCanonicalName(text));
+}
+
+function shotAssetPropHint(value){
+    return /道具|手机|电话|鸡蛋|泡面|方便面|碗|现金|钞票|钱币|外卖袋|配送袋|手提袋|钥匙|文件|照片|水杯|门票|花束|迎宾牌|戒指|行李箱|雨伞|书本|笔记本/.test(String(value || ''));
+}
+
+function shotAssetSceneFallback(shot){
+    const text = smartStoryboardAssetText(shot);
+    for(const [label, pattern] of SHOT_ASSET_SCENE_SPECIFIC_RULES){
+        if(pattern.test(text)) return label;
+    }
+    if(/室内|房间|室内空间|室内场景|会面空间/.test(text)) return '室内';
+    if(/室外|户外|外景|露天/.test(text)) return '室外';
+    return '';
+}
+
+function shotAssetSceneForCard(collector, card){
+    const fallback = shotAssetSceneFallback(card?.shot || {});
+    const analysisFresh = Boolean(collector?.sceneAnalysisSignature) && collector.sceneAnalysisSignature === shotAssetSceneAnalysisSignature(collector);
+    const assignment = analysisFresh ? collector?.sceneAssignments?.[card?.id] : null;
+    const scene = collector?.sceneRegistry?.find(item => item.sceneId === assignment?.sceneId && shotAssetSceneLooksLikePhysicalLocation(item.canonicalName));
+    if(!scene) return {sceneId:fallback ? `fallback:${smartMentionKey(fallback)}` : '', label:fallback, canonicalName:fallback, source:'local'};
+    return {
+        sceneId:String(scene.sceneId || `fallback:${smartMentionKey(scene.canonicalName || fallback)}`),
+        label:String(scene.canonicalName || fallback || '').trim(),
+        canonicalName:String(scene.canonicalName || fallback || '').trim(),
+        spaceType:String(scene.spaceType || '').trim(),
+        specificLocation:String(scene.specificLocation || '').trim(),
+        aliases:Array.isArray(scene.aliases) ? scene.aliases : [],
+        confidence:Number.isFinite(Number(assignment?.confidence)) ? Number(assignment.confidence) : Number(scene.confidence || 0),
+        source:'ai'
+    };
+}
+
+function shotAssetSceneAnalysisSignature(collector){
+    return JSON.stringify(shotAssetCollectorCards(collector).map(card => ({
+        id:card.id,
+        shotNumber:card.shot?.shotNumber || '',
+        timeRange:card.shot?.timeRange || '',
+        subjects:card.shot?.subjects || '',
+        sourceText:card.shot?.sourceText || '',
+        scene:shotAssetSceneFallback(card.shot || {})
+    })));
+}
+
 function smartStoryboardAssetFields(shot){
     const text = smartStoryboardAssetText(shot);
     const people = shotAssetCharacterNamesForCard({shot}).slice(0, 6);
@@ -370,7 +523,7 @@ function smartStoryboardAssetFields(shot){
     const scene = (text.match(/室内会面空间|婚礼现场|婚纱店|酒店|餐厅|小区|走廊|电梯|办公室|车内|街道|夜路|房间|门口|城市空间|室内|室外/) || [''])[0];
     // 服装、手提袋、虚化工作人员等属于画面提示词，不自动变成资产需求；需要时可在人物行里手动绑定并选择用途。
     const wardrobe = '';
-    const props = [];
+    const props = shotAssetPropNamesForCard({shot});
     return {
         main:people[0] || '',
         second:people[1] || '',
@@ -630,6 +783,8 @@ function shotAssetCleanCharacterName(value){
 function shotAssetLooksLikeNamedCharacter(value){
     const name = shotAssetCleanCharacterName(value);
     if(!name || name.length > 12) return false;
+    if(shotAssetPropHint(name)) return false;
+    if(shotAssetSceneCanonicalName(name) || /地面|地板|桌面|窗户|风扇|生活空间|生活环境|坐姿|墙面|门框/.test(name)) return false;
     if(/^(?:他|她|他们|她们|有人|众人|人群|路人|工作人员|服务员|店员|宾客|同事|保安|司机|医生|护士|群众|无|未知|-)$/.test(name)) return false;
     if(/旁白|文字|字幕|手机|导航|订单|平台|提示音|画面|镜头|场景|酒店|大厅|入口|门口|宴会厅|电梯|走廊|通道|房间|街道|婚礼|彩排|迎宾|指示牌|标牌|牌子|外卖|手提袋|袋|箱|手机|婚纱|服装|衣服|裙|西装|车辆|汽车|电动车|花束|道具|三年前|三年后|回忆|现在/.test(name)) return false;
     return true;
@@ -662,11 +817,43 @@ function shotAssetCharacterNamesForCard(card){
     return names;
 }
 
-function shotAssetDemandItemsForCard(card){
+function shotAssetPropNamesForCard(card){
+    const shot = card?.shot || {};
+    const text = smartStoryboardAssetText(shot);
+    const rules = [
+        ['手机', /手机|电话/],
+        ['鸡蛋', /鸡蛋/],
+        ['泡面碗', /泡面碗|方便面碗/],
+        ['泡面', /泡面|方便面/],
+        ['钱', /现金|钞票|钱币|拿出钱|掏钱|递钱|一叠钱/],
+        ['外卖袋', /外卖袋|配送袋|外卖手提袋/],
+        ['钥匙', /钥匙/],
+        ['文件', /文件|资料/],
+        ['照片', /照片|相片/],
+        ['水杯', /水杯|杯子/],
+        ['门票', /门票|票据/],
+        ['花束', /花束|鲜花/],
+        ['迎宾牌', /迎宾牌|欢迎牌/],
+        ['戒指', /戒指/],
+        ['行李箱', /行李箱/],
+        ['雨伞', /雨伞|伞/]
+    ];
+    const names = rules.filter(([, pattern]) => pattern.test(text)).map(([name]) => name);
+    (Array.isArray(shot.referenceAssets) ? shot.referenceAssets : []).forEach(item => {
+        if(!item || typeof item !== 'object' || !/prop|道具|object/i.test(String(item.type || item.category || ''))) return;
+        const name = String(item.name || item.label || '').trim();
+        if(name && shotAssetPropHint(name) && !names.includes(name)) names.push(name);
+    });
+    return [...new Set(names)];
+}
+
+function shotAssetDemandItemsForCard(card, collector=null){
     if(!card?.id) return [];
     const shotLabel = shotAssetCardLabel(card);
     const characters = shotAssetCharacterNamesForCard(card);
+    const props = shotAssetPropNamesForCard(card);
     const fields = smartStoryboardAssetFields(card.shot || {});
+    const sceneInfo = shotAssetSceneForCard(collector, card);
     const items = [];
     if(!characters.length){
         items.push({
@@ -685,15 +872,26 @@ function shotAssetDemandItemsForCard(card){
             shotLabel
         }));
     }
-    if(fields.scene){
+    if(sceneInfo.label){
         items.push({
-            key:shotAssetDemandKey('scene', fields.scene),
+            key:shotAssetDemandKey('scene', sceneInfo.sceneId || sceneInfo.label),
             type:'scene',
-            label:fields.scene,
+            label:sceneInfo.label,
+            sceneId:sceneInfo.sceneId,
+            sceneAliases:sceneInfo.aliases || [],
+            sceneSource:sceneInfo.source || 'local',
+            sceneConfidence:sceneInfo.confidence || 0,
             cardId:card.id,
             shotLabel
         });
     }
+    props.forEach(name => items.push({
+        key:shotAssetDemandKey('prop', name),
+        type:'prop',
+        label:name,
+        cardId:card.id,
+        shotLabel
+    }));
     return items;
 }
 
@@ -744,7 +942,7 @@ function shotAssetCollectorCards(collector){
 function shotAssetCollectorDemands(collector){
     const map = new Map();
     shotAssetCollectorCards(collector).forEach(card => {
-        shotAssetDemandItemsForCard(card).forEach(item => {
+        shotAssetDemandItemsForCard(card, collector).forEach(item => {
             const prev = map.get(item.key) || {...item, cardIds:[], shotLabels:[]};
             if(!prev.cardIds.includes(card.id)) prev.cardIds.push(card.id);
             if(!prev.shotLabels.includes(item.shotLabel)) prev.shotLabels.push(item.shotLabel);
@@ -876,16 +1074,31 @@ function shotAssetCollectorBindings(collector, demandKey){
     const bindings = collector?.shotAssetBindings && typeof collector.shotAssetBindings === 'object' ? collector.shotAssetBindings : {};
     const raw = bindings[demandKey];
     if(!raw) return [];
-    if(Array.isArray(raw)) return raw.filter(item => item?.url);
-    if(Array.isArray(raw.items)) return raw.items.filter(item => item?.url);
-    if(raw.url) return [raw];
-    return [];
+    const items = Array.isArray(raw) ? raw : Array.isArray(raw.items) ? raw.items : raw.url ? [raw] : [];
+    const seen = new Set();
+    const unique = items.filter(item => {
+        if(!item?.url) return false;
+        const keys = referenceImageDedupeKeys(item);
+        if(keys.some(key => seen.has(key))) return false;
+        keys.forEach(key => seen.add(key));
+        return true;
+    });
+    const demand = shotAssetCollectorDemands(collector).find(item => item.key === demandKey);
+    return demand?.type === 'scene' ? unique.slice(0, 1) : unique;
 }
 
 function setShotAssetCollectorBindings(collector, demandKey, items){
     if(!collector || !demandKey) return;
     if(!collector.shotAssetBindings || typeof collector.shotAssetBindings !== 'object') collector.shotAssetBindings = {};
-    const normalized = (Array.isArray(items) ? items : []).filter(item => item?.url);
+    const demand = shotAssetCollectorDemands(collector).find(item => item.key === demandKey);
+    const seen = new Set();
+    const normalized = (Array.isArray(items) ? items : []).filter(item => {
+        if(!item?.url) return false;
+        const keys = referenceImageDedupeKeys(item);
+        if(keys.some(key => seen.has(key))) return false;
+        keys.forEach(key => seen.add(key));
+        return true;
+    }).slice(0, demand?.type === 'scene' ? 1 : undefined);
     if(!normalized.length){
         delete collector.shotAssetBindings[demandKey];
         return;
@@ -904,10 +1117,10 @@ function setShotAssetCollectorBinding(collector, demandKey, candidate){
 function toggleShotAssetCollectorBinding(collector, demandKey, candidate, checked){
     if(!collector || !demandKey || !candidate?.url) return;
     const candidateKey = shotAssetCandidateKey(candidate);
-    const next = shotAssetCollectorBindings(collector, demandKey)
+    const demand = shotAssetCollectorDemands(collector).find(item => item.key === demandKey);
+    const next = (checked && demand?.type === 'scene' ? [] : shotAssetCollectorBindings(collector, demandKey))
         .filter(item => item?.candidateKey !== candidateKey && item?.url !== candidate.url);
     if(checked){
-        const demand = shotAssetCollectorDemands(collector).find(item => item.key === demandKey);
         const activeCategory = shotAssetPickerStateFor(collector)?.category || '';
         const purposeType = activeCategory === 'scene' ? 'scene' : shotAssetDefaultPurpose(demand?.type);
         const binding = shotAssetBindingFromCandidate(candidate, {purpose:purposeType});
@@ -967,9 +1180,11 @@ const SHOT_ASSET_PICKER_CATEGORIES = [
     ['scene', '场景']
 ];
 
+SHOT_ASSET_PICKER_CATEGORIES.push(['prop', '道具']);
+
 function shotAssetDemandCategory(demand){
     const type = demand?.type || 'character';
-    return type === 'scene' ? 'scene' : 'character';
+    return type === 'scene' ? 'scene' : type === 'prop' ? 'prop' : 'character';
 }
 
 function shotAssetPickerCategoryLabel(category){
@@ -978,7 +1193,7 @@ function shotAssetPickerCategoryLabel(category){
 
 function shotAssetPickerDemandsForCategory(collector, category){
     const demands = shotAssetCollectorDemands(collector);
-    const normalized = category === 'scene' ? 'scene' : 'character';
+    const normalized = ['scene','prop'].includes(category) ? category : 'character';
     return demands.filter(demand => shotAssetDemandCategory(demand) === normalized);
 }
 
@@ -989,7 +1204,7 @@ function shotAssetPickerEnsureState(collector, demandKey=''){
     let state = shotAssetPickerStateFor(collector);
     const previousDemand = demands.find(item => item.key === state?.demandKey);
     const preferredCategory = incomingDemand ? shotAssetDemandCategory(incomingDemand) : (state?.category || shotAssetDemandCategory(previousDemand || demands[0]));
-    const category = preferredCategory === 'scene' ? 'scene' : 'character';
+    const category = ['scene','prop'].includes(preferredCategory) ? preferredCategory : 'character';
     const categoryDemands = shotAssetPickerDemandsForCategory(collector, category);
     const fallbackDemand = incomingDemand?.key || (previousDemand && shotAssetDemandCategory(previousDemand) === category ? previousDemand.key : '') || categoryDemands[0]?.key || demands[0]?.key || '';
     if(!state){
@@ -1015,18 +1230,25 @@ function shotAssetPickerActiveDemand(collector){
 function shotAssetPickerCandidateCategory(candidate){
     const assetName = [candidate?.name, candidate?.alias].filter(Boolean).join(' ');
     const textValue = [candidate?.category, candidate?.assetRole, candidate?.categoryName, assetName].filter(Boolean).join(' ');
+    const metaText = [candidate?.category, candidate?.assetRole, candidate?.categoryName].filter(Boolean).join(' ');
+    if(/人物|角色|character/i.test(metaText)) return 'character';
+    if(/道具|物品|prop|object/i.test(metaText)) return 'prop';
+    if(/三视图|四视图|特写|正面|侧面|背面|半身|全身|肖像|面部/.test(assetName)) return 'character';
+    if(shotAssetPropHint(textValue)) return 'prop';
     // 先排除明确的服装、道具和风格资产，避免“婚礼迎宾牌”被“婚礼”误判成场景，
     // 也避免资产库分类名为“人物”时把外卖袋、手机等带入人物候选。
     const objectOrStyle = /迎宾牌|指示牌|标牌|立牌|牌子|外卖袋|外卖箱|手提袋|礼品袋|纸袋|包装袋|袋子|手机|戒指|花束|钥匙|文件|水杯|门票|电动车|自行车|摩托车|汽车|车辆|道具|服装|衣服|上衣|外套|裙装|婚纱(?!店)|西装|校服|工装|外卖服|造型|妆造|画风|风格参考|质感参考|style|look|mood/i;
     if(objectOrStyle.test(assetName)) return '';
     const guessed = smartAssetCategoryForText(textValue);
     if(guessed === 'scene') return 'scene';
-    if(['wardrobe','prop','style'].includes(guessed) || objectOrStyle.test(textValue)) return '';
+    if(guessed === 'prop') return 'prop';
+    if(['wardrobe','style'].includes(guessed) || objectOrStyle.test(textValue)) return '';
     return 'character';
 }
 
 function shotAssetPickerCandidateGroup(candidate, activeDemand=null){
     const cat = shotAssetPickerCandidateCategory(candidate);
+    if(cat === 'prop') return candidate?.categoryName || '道具';
     const rawName = String(candidate?.name || candidate?.alias || candidate?.categoryName || '未命名资产').trim();
     if(cat === 'character'){
         const demandLabel = String(activeDemand?.label || '').trim();
@@ -1092,9 +1314,7 @@ function shotAssetSafeAliasMatch(demandNames, candidateNames){
 function shotAssetMatchForCandidate(collector, demand, candidate){
     if(!collector || !demand || !candidate?.url) return {confidence:0, reason:'未匹配', matchType:'unmatched'};
     const candidateKey = shotAssetCandidateKey(candidate);
-    if(shotAssetCollectorBindingKeys(collector, demand.key).has(candidateKey)){
-        return {confidence:1, reason:'你已经手动确认过这张资产', matchType:'confirmed'};
-    }
+    const confirmed = shotAssetCollectorBindingKeys(collector, demand.key).has(candidateKey);
     const recommendation = shotAssetRecommendationFor(collector, demand.key, candidateKey);
     const demandNames = [demand.label, ...shotAssetDemandAliases(collector, demand)]
         .map(smartAssetTextKey)
@@ -1113,21 +1333,26 @@ function shotAssetMatchForCandidate(collector, demand, candidate){
     }
     const alias = shotAssetSafeAliasMatch(demandNames, [...candidateNames, groupName].filter(Boolean));
     if(alias && alias.confidence > local.confidence) local = alias;
-    if(!recommendation) return local;
+    if(!recommendation) return {...local, confirmed};
     const ai = {
         confidence:Math.max(0, Math.min(1, Number(recommendation.confidence) || 0)),
         reason:String(recommendation.reason || 'AI认为该资产与当前人物可能相关').trim(),
         matchType:String(recommendation.matchType || 'ai').trim() || 'ai'
     };
-    return ai.confidence > local.confidence ? ai : local;
+    return {...(ai.confidence > local.confidence ? ai : local), confirmed};
 }
 
 function shotAssetMatchBadgeHtml(match){
     const confidence = Math.max(0, Math.min(1, Number(match?.confidence) || 0));
-    if(confidence <= 0) return '<em class="shot-asset-match-badge none">未匹配</em>';
-    const percent = Math.round(confidence * 100);
-    const level = percent >= 90 ? 'high' : percent >= 70 ? 'possible' : 'low';
-    return `<em class="shot-asset-match-badge ${level}">匹配 ${percent}%</em>`;
+    const matchBadge = confidence <= 0
+        ? '<em class="shot-asset-match-badge none">未匹配</em>'
+        : (() => {
+            const percent = Math.round(confidence * 100);
+            const level = percent >= 90 ? 'high' : percent >= 70 ? 'possible' : 'low';
+            return `<em class="shot-asset-match-badge ${level}">匹配 ${percent}%</em>`;
+        })();
+    const selectedBadge = match?.confirmed ? '<em class="shot-asset-selected-badge">已选择</em>' : '';
+    return `${matchBadge}${selectedBadge}`;
 }
 
 function shotAssetRecommendationSignature(collector){
@@ -1148,6 +1373,9 @@ function shotAssetRecommendationsNeedRefresh(collector){
 }
 
 function shotAssetDefaultGenerationPrompt(demand){
+    if(shotAssetDemandCategory(demand) === 'prop'){
+        return `道具资产图：${String(demand?.label || '').trim() || '道具'}。真实短剧拍摄用道具参考，横版16:9，清晰展示物体的完整外观、材质、尺寸关系和关键细节，背景简洁干净，不添加人物、文字、水印或无关物件。`;
+    }
     const label = String(demand?.label || '').trim() || (shotAssetDemandCategory(demand) === 'scene' ? '场景' : '人物');
     if(shotAssetDemandCategory(demand) === 'scene'){
         return `场景资产图：${label}。真人情感短剧写实场景参考，横版16:9，清楚呈现空间布局、入口和主要动线，真实自然光与生活质感。画面中不出现人物，不生成文字或水印。`;
@@ -1214,6 +1442,20 @@ function shotAssetRecommendationBarHtml(collector){
     </div>`;
 }
 
+function shotAssetSceneAnalysisBarHtml(collector){
+    const running = collector?.sceneAnalysisRunning === true;
+    const sceneCount = Array.isArray(collector?.sceneRegistry) ? collector.sceneRegistry.filter(item => shotAssetSceneLooksLikePhysicalLocation(item?.canonicalName)).length : 0;
+    const status = running
+        ? 'AI正在把整段故事的场景放在一起判断...'
+        : sceneCount
+        ? `已统一整理 ${sceneCount} 个场景，镜头需求会按场景 ID 合并`
+        : '先统一判断“房间/室内”是否同一空间，再分开“出租屋/婚礼现场”等具体地点';
+    return `<div class="shot-asset-scene-analysis ${running ? 'running' : sceneCount ? 'ready' : ''}">
+        <div><b>全剧场景整理</b><span>${escapeHtml(status)}</span></div>
+        <button class="shot-asset-ai-scenes" type="button" data-shot-asset-scene-action="analyze" ${running ? 'disabled' : ''}>${running ? '整理中...' : sceneCount ? '重新整理场景' : 'AI整理场景'}</button>
+    </div>`;
+}
+
 function normalizeShotAssetRecommendations(payload, demandById, candidateById){
     const raw = payload && typeof payload === 'object' ? payload : {};
     const byDemand = {};
@@ -1253,8 +1495,8 @@ async function recommendShotAssetsWithAi(collector, options={}){
     if(!collector || collector.assetRecommendationRunning) return;
     const inputSignature = shotAssetRecommendationSignature(collector);
     if(!options.force && collector.assetRecommendations && collector.assetRecommendationSignature === inputSignature) return;
-    const demands = shotAssetCollectorDemands(collector).filter(demand => ['character','scene'].includes(shotAssetDemandCategory(demand)));
-    const candidates = shotAssetCollectorCandidates(collector).filter(candidate => ['character','scene'].includes(shotAssetPickerCandidateCategory(candidate)));
+    const demands = shotAssetCollectorDemands(collector).filter(demand => ['character','scene','prop'].includes(shotAssetDemandCategory(demand)));
+    const candidates = shotAssetCollectorCandidates(collector).filter(candidate => ['character','scene','prop'].includes(shotAssetPickerCandidateCategory(candidate)));
     if(!demands.length){ toast('当前没有可匹配的人物或场景需求'); return; }
     if(!candidates.length){ toast('当前没有候选资产，请先连入图片或开启项目资产库'); return; }
     const demandById = new Map();
@@ -1269,7 +1511,7 @@ async function recommendShotAssetsWithAi(collector, options={}){
                 story:shotAssetCardLabel(card),
                 time:card.shot?.timeRange || '',
                 subjects:card.shot?.subjects || '',
-                scene:smartStoryboardAssetFields(card.shot || {}).scene || '',
+                scene:shotAssetSceneForCard(collector, card).label || '',
                 purpose:card.shot?.purpose || ''
             }));
         return {id, type:shotAssetDemandCategory(demand), name:demand.label, aliases:shotAssetDemandAliases(collector, demand), storyboards:demand.shotLabels, context};
@@ -1291,11 +1533,12 @@ async function recommendShotAssetsWithAi(collector, options={}){
     });
     const message = JSON.stringify({demands:demandRows, candidates:candidateRows}, null, 2);
     const systemPrompt = `你是真人情感短剧的资产匹配助手。根据需求人物名称、别名、镜头上下文、候选资产名称、备注与分组，逐张给出“建议人工勾选”的匹配结果。规则：1. 人物只能推荐人物候选，场景只能推荐场景候选；2. 同一人物可推荐特写、四视图等多张互补资产；3. 阿野、小野只有在别名或上下文明确支持时才可视为可能同一人物；4. 阿涛与阿野不能因为都含有“阿”或共享普通字就合并；5. 不确定时给低分或不返回；6. 绝对不能把道具、服装、婚礼迎宾牌、外卖袋等当成人物；7. 每张资产单独返回confidence，不要让多张资产共用一个分数；8. 只返回输入中存在的D和A编号。只输出JSON：{"summary":"一句话说明","recommendations":[{"demandId":"D1","assetId":"A1","confidence":0.92,"matchType":"alias","reason":"简短具体理由"}]}。`;
+    const categoryGuard = '只允许三类：character=人物、scene=场景、prop=道具。道具只能匹配道具资产；服装、风格、动作、情绪、食物、家具、生活环境细节不得当成人物或场景。未知类型不要推荐。';
     collector.assetRecommendationRunning = true;
     render();
     try {
         const ai = promptOptimizationConfigForCollector(collector);
-        const result = await requestSmartCanvasLlmText(message, {...ai, systemPrompt});
+        const result = await requestSmartCanvasLlmText(message, {...ai, systemPrompt:`${categoryGuard}\n${systemPrompt}`});
         const payload = window.ScriptToStoryboard?.extractJson?.(result.text);
         if(!payload) throw new Error('AI没有返回可解析的资产建议');
         const normalized = normalizeShotAssetRecommendations(payload, demandById, candidateById);
@@ -1308,6 +1551,140 @@ async function recommendShotAssetsWithAi(collector, options={}){
         toast(`AI资产匹配失败：${String(error?.message || error).slice(0, 100)}`);
     } finally {
         collector.assetRecommendationRunning = false;
+        render();
+    }
+}
+
+function normalizeShotSceneAnalysis(payload, collector, cards){
+    const raw = payload && typeof payload === 'object' ? payload : {};
+    const validCardIds = new Set(cards.map(card => card.id));
+    const scenes = [];
+    const sceneById = new Map();
+    const assignments = {};
+    const rawScenes = Array.isArray(raw.scenes) ? raw.scenes : [];
+    const rawAssignments = Array.isArray(raw.assignments) ? raw.assignments : [];
+    const addScene = (item, index, linkedCardIds=[]) => {
+        const rawName = String(item?.canonicalName || item?.name || item?.specificLocation || '').trim();
+        const canonicalName = shotAssetSceneCanonicalName(rawName);
+        if(!shotAssetSceneLooksLikePhysicalLocation(canonicalName)) return null;
+        const sceneId = String(item?.sceneId || `S${index + 1}`).trim() || `S${index + 1}`;
+        const shotIds = [...new Set([
+            ...(Array.isArray(item?.shotIds) ? item.shotIds : []),
+            ...linkedCardIds
+        ].map(value => String(value || '').trim()).filter(value => validCardIds.has(value)))];
+        const scene = {
+            sceneId,
+            canonicalName,
+            spaceType:String(item?.spaceType || '').trim(),
+            specificLocation:String(item?.specificLocation || canonicalName).trim(),
+            aliases:[...new Set((Array.isArray(item?.aliases) ? item.aliases : []).map(value => String(value || '').trim()).filter(Boolean))].slice(0, 12),
+            needsAsset:item?.needsAsset !== false,
+            confidence:Number.isFinite(Number(item?.confidence)) ? Math.max(0, Math.min(1, Number(item.confidence) > 1 ? Number(item.confidence) / 100 : Number(item.confidence))) : 0,
+            shotIds,
+            reason:String(item?.reason || '').trim()
+        };
+        if(sceneById.has(sceneId)){
+            const previous = sceneById.get(sceneId);
+            previous.shotIds = [...new Set([...previous.shotIds, ...shotIds])];
+            return previous;
+        }
+        sceneById.set(sceneId, scene);
+        scenes.push(scene);
+        return scene;
+    };
+    rawScenes.forEach((item, index) => addScene(item, index));
+    rawAssignments.forEach(item => {
+        const cardId = String(item?.cardId || '').trim();
+        if(!validCardIds.has(cardId)) return;
+        const sceneId = String(item?.sceneId || '').trim();
+        let scene = sceneById.get(sceneId);
+        if(!scene){
+            scene = addScene({
+                sceneId:sceneId || `S${scenes.length + 1}`,
+                canonicalName:item?.canonicalName || item?.scene || '',
+                spaceType:item?.spaceType,
+                specificLocation:item?.specificLocation,
+                aliases:item?.aliases,
+                confidence:item?.confidence,
+                needsAsset:item?.needsAsset
+            }, scenes.length, [cardId]);
+        }
+        if(!scene) return;
+        scene.shotIds = [...new Set([...scene.shotIds, cardId])];
+        assignments[cardId] = {
+            sceneId:scene.sceneId,
+            rawTerms:Array.isArray(item?.rawTerms) ? item.rawTerms.map(value => String(value || '').trim()).filter(Boolean).slice(0, 12) : [],
+            confidence:Number.isFinite(Number(item?.confidence)) ? Math.max(0, Math.min(1, Number(item.confidence) > 1 ? Number(item.confidence) / 100 : Number(item.confidence))) : scene.confidence
+        };
+    });
+    scenes.forEach(scene => {
+        (scene.shotIds || []).forEach(cardId => {
+            if(assignments[cardId]) return;
+            assignments[cardId] = {sceneId:scene.sceneId, rawTerms:scene.aliases || [], confidence:scene.confidence || 0};
+        });
+    });
+    cards.forEach(card => {
+        if(assignments[card.id]) return;
+        const fallback = shotAssetSceneFallback(card.shot || {});
+        if(!fallback) return;
+        const sceneId = `fallback:${smartMentionKey(fallback)}`;
+        let scene = sceneById.get(sceneId);
+        if(!scene){
+            scene = addScene({sceneId, canonicalName:fallback, specificLocation:fallback, needsAsset:true, confidence:0}, scenes.length, []);
+        }
+        if(scene){
+            scene.shotIds = [...new Set([...scene.shotIds, card.id])];
+            assignments[card.id] = {sceneId:scene.sceneId, rawTerms:[fallback], confidence:scene.confidence || 0};
+        }
+    });
+    return {scenes, assignments};
+}
+
+async function analyzeShotScenesWithAi(collector, options={}){
+    if(!collector || collector.sceneAnalysisRunning) return;
+    const cards = shotAssetCollectorCards(collector);
+    if(!cards.length){ toast('当前没有可整理的故事板镜头'); return; }
+    const inputSignature = shotAssetSceneAnalysisSignature(collector);
+    if(!options.force && collector.sceneAnalysisSignature === inputSignature && Array.isArray(collector.sceneRegistry)) return;
+    const storyboardRows = cards.map(card => ({
+        cardId:card.id,
+        shot:shotAssetCardLabel(card),
+        timeRange:card.shot?.timeRange || '',
+        subjects:card.shot?.subjects || '',
+        sceneHints:smartStoryboardAssetText(card.shot || {}).slice(0, 5000)
+    }));
+    const message = JSON.stringify({storyboards:storyboardRows}, null, 2);
+    const systemPrompt = `你是短剧制作流程中的全剧场景整理助手。请先把全部故事板放在同一上下文中分析，再建立统一的场景表，并给每个故事板卡分配一个场景。你的任务只是整理场景，不要处理人物、服装、道具或画面风格。
+规则：
+1. 同一个物理空间的“房间、室内、室内空间、会面空间”等泛称要合并为同一个场景，使用更准确的统一名称；
+2. “出租屋、婚礼现场、酒店、走廊”等具体地点优先保留具体名称，不要因为它们都属于室内就合并；
+3. 只有确定是同一个空间才能合并，不确定时分开；
+4. 不要凭空创造剧本没有的地点；
+5. needsAsset 表示这个场景是否建议准备参考资产；不需要资产也可以返回 false；
+6. 只能使用输入中的 cardId，必须给每张有场景提示的卡分配场景；
+7. 只输出 JSON，不要 Markdown。
+格式：{"scenes":[{"sceneId":"S1","canonicalName":"出租屋","spaceType":"室内","specificLocation":"出租屋","aliases":["房间","室内"],"needsAsset":true,"shotIds":["卡片ID"],"confidence":0.95,"reason":"合并依据"}],"assignments":[{"cardId":"卡片ID","sceneId":"S1","rawTerms":["房间","室内"],"confidence":0.95}]}`;
+    const sceneGuard = '场景只表示真实空间或地点，例如出租屋、办公室、婚礼现场、酒店、走廊、街道。鸡蛋、泡面、碗、钱、风扇、窗户、地面、家具、服装、人物、动作、情绪、生活环境细节都不是场景，必须忽略；没有明确空间时不要创建场景。';
+    collector.sceneAnalysisRunning = true;
+    render();
+    try {
+        const ai = promptOptimizationConfigForCollector(collector);
+        const result = await requestSmartCanvasLlmText(message, {...ai, systemPrompt:`${sceneGuard}\n${systemPrompt}`});
+        const payload = window.ScriptToStoryboard?.extractJson?.(result.text) || JSON.parse(result.text);
+        const normalized = normalizeShotSceneAnalysis(payload, collector, cards);
+        if(!normalized.scenes.length && cards.some(card => shotAssetSceneFallback(card.shot || {}))) throw new Error('AI未返回有效的场景整理结果');
+        collector.sceneRegistry = normalized.scenes;
+        collector.sceneAssignments = normalized.assignments;
+        collector.sceneAnalysisSignature = inputSignature;
+        collector.sceneAnalysisProvider = result.provider;
+        collector.sceneAnalysisModel = result.model;
+        collector.sceneAnalysisGeneratedAt = Date.now();
+        scheduleSave();
+        toast(`AI已统一整理 ${normalized.scenes.length} 个场景，已同步到镜头需求`);
+    } catch(error){
+        toast(`AI场景整理失败：${String(error?.message || error).slice(0, 100)}`);
+    } finally {
+        collector.sceneAnalysisRunning = false;
         render();
     }
 }
@@ -1401,7 +1778,7 @@ function shotAssetCollectorForCard(card){
 }
 
 function shotAssetCollectorDemandsForCard(collector, card){
-    const cardDemandKeys = new Set(shotAssetDemandItemsForCard(card).map(item => item.key));
+    const cardDemandKeys = new Set(shotAssetDemandItemsForCard(card, collector).map(item => item.key));
     return shotAssetCollectorDemands(collector).filter(item => cardDemandKeys.has(item.key));
 }
 
@@ -1483,7 +1860,18 @@ function shotAssetCollectorRefsForCard(card){
     if(!collector) return [];
     const refs = shotAssetCollectorDemandsForCard(collector, card)
         .flatMap(demand => shotAssetCollectorBindings(collector, demand.key)
-            .filter(binding => ['character','scene'].includes(shotAssetBindingCategory(binding, demand))))
+            .filter(binding => ['character','scene','prop'].includes(shotAssetBindingCategory(binding, demand)))
+            .map(binding => ({
+                ...binding,
+                demandKey:demand.key,
+                demandType:demand.type,
+                demandLabel:demand.label,
+                sceneId:demand.sceneId || '',
+                referenceCategory:shotAssetDemandCategory(demand),
+                referenceSceneKey:shotAssetDemandCategory(demand) === 'scene'
+                    ? (demand.canonicalName || demand.label || demand.sceneId || '')
+                    : ''
+            })))
         .filter(binding => binding?.url)
         .map(binding => ({
             ...binding,
@@ -1538,7 +1926,7 @@ function shotAssetCollectorUsageTextForCard(card){
     const parts = [];
     shotAssetCollectorDemandsForCard(collector, card).forEach(demand => {
         shotAssetCollectorBindings(collector, demand.key)
-            .filter(binding => ['character','scene'].includes(shotAssetBindingCategory(binding, demand)))
+            .filter(binding => ['character','scene','prop'].includes(shotAssetBindingCategory(binding, demand)))
             .forEach(binding => {
             const name = String(binding.name || binding.alias || '参考图').replace(/^@+/, '').replace(/\s+/g, '_');
             parts.push(`@${name}=${shotAssetReadableUsageLabel(demand, binding)}`);
@@ -1716,6 +2104,7 @@ function shotAssetCollectorBodyHtml(node){
                 <label title="把上一镜结束帧作为连续性参考"><input class="shot-asset-toggle" data-shot-asset-key="inheritPrevious" type="checkbox" ${node.inheritPrevious !== false ? 'checked' : ''}>上一镜结束帧</label>
             </div>
         </div>
+        ${shotAssetSceneAnalysisBarHtml(node)}
         ${shotAssetRecommendationBarHtml(node)}
         <div class="shot-asset-category-tabs">${categoryTabs}</div>
         <div class="shot-asset-workspace">
@@ -2112,7 +2501,7 @@ function smartStoryboardReferenceImagesFor(source, prompt=''){
         ...smartResolvePlainMentionImages(prompt),
         ...manualReferenceImagesFor(source)
     ];
-    return uniqueReferenceImages(refs);
+    return storyboardUniqueRefs(refs);
 }
 
 function storyboardDurationSeconds(shot){
@@ -2205,14 +2594,22 @@ function storyboardOutputKindLabel(kind){
 function storyboardOutputDisplayTitle(node){
     const current = String(node?.title || '').trim();
     const generic = /^(Image|Video|Videos|Group|图片|视频|生成图片)$/i;
-    if(current && !generic.test(current)) return current;
+    const needsStoryboardLabel = node?.storyboardOutputKind === 'whole-preview'
+        && /整段故事板|故事板$/.test(current)
+        && !/导演|写实|九宫格|十二宫格/.test(current);
+    if(current && !generic.test(current) && !needsStoryboardLabel) return current;
     const source = nodes.find(n => n.id === node?.storyboardSourceCardId);
     const label = source?.shot?.shotNumber || source?.title || '故事板';
+    if(node?.storyboardOutputKind === 'whole-preview'){
+        const style = storyboardPreviewStyleForNode(node) === 'realistic' ? '写实' : '导演';
+        const panelCount = storyboardPanelCountForNode(node);
+        return `${label} ${style}${panelCount === 12 ? '十二宫格' : '九宫格'}分镜`;
+    }
     return `${label} ${storyboardOutputKindLabel(node?.storyboardOutputKind)}`;
 }
 
 function storyboardOutputReferenceImages(node){
-    return uniqueReferenceImages([
+    return storyboardUniqueRefs([
         ...(node?.manualInputRefs || []),
         ...(node?.runPromptRefs || []),
         ...(node?.runInputRefs || [])
@@ -2336,7 +2733,7 @@ async function runStoryboardOutputNode(nodeId){
     } catch(err) {
         request = null;
     }
-    const refs = uniqueReferenceImages([
+    const refs = storyboardUniqueRefs([
         ...((request?.refs || []).filter(ref => ref?.url)),
         ...storyboardOutputReferenceImages(node)
     ]).map((ref, index) => ({...ref, role:ref.role || `image_${index + 1}`}));
@@ -2389,21 +2786,6 @@ async function runStoryboardOutputNode(nodeId){
         render();
         scheduleSave();
     }
-}
-
-function smartStoryboardWholePrompt(source){
-    if(window.ScriptToStoryboard?.buildWholeStoryboardPrompt){
-        const shot = source?.shot || {};
-        return appendStoryboardImagePromptGuard(window.ScriptToStoryboard.buildWholeStoryboardPrompt(shot), shot, Array.isArray(shot.frames) ? shot.frames.length : 0);
-    }
-    const shot = source?.shot || {};
-    const frames = Array.isArray(shot.frames) ? shot.frames : [];
-    const prompt = [
-        `${shot.shotNumber || '镜头'} 完整故事板总览图`,
-        '把以下故事板帧按时间顺序排成一张完整总览图，每一帧独立可读，能看清剧情推进、人物站位、情绪变化和运镜节奏。',
-        frames.map((frame, index) => `【${frame.label || `故事板帧${index + 1}`}】\n${frame.description || ''}\n${frame.composition || ''}\n${frame.emotion || ''}`).join('\n\n')
-    ].filter(Boolean).join('\n');
-    return appendStoryboardImagePromptGuard(prompt, shot, frames.length);
 }
 
 function storyboardPromptValueText(value, depth=0){
@@ -2470,11 +2852,31 @@ function storyboardNarrativeText(source){
     ].filter(Boolean).join('\n\n'), shot);
 }
 
-// This later declaration intentionally upgrades the legacy feature-package prompt.
+const STORYBOARD_PROMPT_VERSION = '20260802-v2';
+
+function storyboardPreviewStyleForNode(node){
+    const explicit = String(node?.storyboardPreviewStyle || '').trim();
+    if(explicit === 'director' || explicit === 'realistic') return explicit;
+    const text = String(node?.runPrompt || node?.prompt || node?.storyboardImagePrompt || '').trim();
+    if(/正常上色|真人影视画面|写实分镜|禁止彩色箭头|不是漫画/.test(text)) return 'realistic';
+    if(/导演分镜|黑白粗铅笔|彩色导演标注|彩色注释系统/.test(text)) return 'director';
+    return '';
+}
+
+function storyboardPanelCountForNode(node){
+    const explicit = Number(node?.storyboardGridCount);
+    if(explicit === 9 || explicit === 12) return explicit;
+    const text = String(node?.runPrompt || node?.prompt || '').trim();
+    if(/4列.?3行|12个连续分镜|编号01[—-]12/.test(text)) return 12;
+    if(/3列.?3行|9个连续分镜|编号01[—-]09/.test(text)) return 9;
+    return 9;
+}
+
 function smartStoryboardWholePrompt(source, requestedPanelCount=9){
     const panelCount = Number(requestedPanelCount) === 12 ? 12 : 9;
     const gridLayout = panelCount === 12 ? '4列×3行' : '3列×3行';
     return [
+        `【模板：导演标注分镜｜${panelCount}格｜${STORYBOARD_PROMPT_VERSION}】`,
         `创建一张专业 PREVIS 导演分镜故事板单页，严格采用${gridLayout}，共${panelCount}个连续分镜。`,
         '【当前故事段】', storyboardNarrativeText(source) || '依据当前故事板卡的完整剧情生成分镜。',
         '【生成逻辑】',
@@ -2482,10 +2884,12 @@ function smartStoryboardWholePrompt(source, requestedPanelCount=9){
         '【参考与连续性】',
         '严格使用输入参考图锁定对应人物和场景。全部画格保持人物五官、发型、年龄、体型、服装、场景布局、时间与光线一致；遵守180度轴线，动作和情绪前后衔接。',
         '【导演分镜风格】',
-        '画格内部使用黑白粗铅笔线、快速手势线和清楚轮廓，重点表达构图、景别、调度、动作方向、视线和节奏。允许克制的彩色导演标注：红色表示人物动作，蓝色表示摄影机运动，绿色表示构图，橙色表示光线，紫色表示声音、情绪、视线或停顿。',
-        '页面底部、所有画框之外画出固定图例“彩色注释系统”，简短说明五种颜色的含义；没有对应动作或运镜时不要为了装饰添加标记。',
+        '【导演标注绘制规则】',
+        '画格内部只使用黑白粗铅笔线、快速手势线、简单人体结构和清楚轮廓，重点表达构图、景别、调度、走位、动作方向、视线和情绪节奏。',
+        '红色箭头=人物身体动作/走位；蓝色箭头=摄影机推拉摇移跟随；绿色线框=构图、取景、画面重心和前中后景；橙色箭头=主要光线方向；紫色标记=声音、情绪、视线或停顿；黑色短文字=面板编号、景别和简短镜头说明。标注必须克制，不遮挡人物，不凭空添加没有对应作用的颜色。',
+        '页面底部、所有画框之外必须画出固定图例“彩色注释系统”，并用短句说明上述颜色作用。',
         '【排版】',
-        `16:9横版、横幅2K，严格${gridLayout}，从左到右、从上到下编号01—${String(panelCount).padStart(2, '0')}。不要竖屏、字幕、水印、大段说明、重复构图或无关人物。`
+        `16:9横版、横幅2K，严格${gridLayout}，从左到右、从上到下编号01—${String(panelCount).padStart(2, '0')}。每格只保留动态生成的黑色短标题，不写大段文字；不要竖屏、字幕、水印、重复构图或无关人物。`
     ].filter(Boolean).join('\n');
 }
 
@@ -2493,7 +2897,8 @@ function smartStoryboardRealisticPrompt(source, requestedPanelCount=9){
     const panelCount = Number(requestedPanelCount) === 12 ? 12 : 9;
     const gridLayout = panelCount === 12 ? '4列×3行' : '3列×3行';
     return [
-        `创建一张专业真人影视 PREVIS 写实分镜单页，严格采用${gridLayout}，共${panelCount}个连续分镜。`,
+        `【模板：彩色真人写实分镜｜${panelCount}格｜${STORYBOARD_PROMPT_VERSION}】`,
+        `创建一张专业真人影视彩色写实分镜单页，严格采用${gridLayout}，共${panelCount}个连续分镜。`,
         '【当前故事段】', storyboardNarrativeText(source) || '依据当前故事板卡的完整剧情生成分镜。',
         '【叙事与镜头】',
         `先理解时间、地点、人物关系、关键动作、台词、视线、情绪推进和结束状态，再选择${panelCount}个最必要的视觉节点。不要机械平均拆分台词，不要使用固定剧情模板，每格只有一个明确视觉任务。`,
@@ -2501,9 +2906,11 @@ function smartStoryboardRealisticPrompt(source, requestedPanelCount=9){
         '【参考与连续性】',
         '严格使用输入参考图锁定对应人物和场景，不混合不同参考图的身份与服装。全部画格保持五官、发型、年龄、体型、服装、场景、时间、光线、物件和调色一致；遵守180度轴线，动作连续。',
         '【画面风格】',
-        '正常上色的真人写实影视画面，真实皮肤与五官、可信表演、合理机位焦段、清楚前中后景、自然景深、摄影机透视和真实光源，统一克制的电影调色。不是漫画、动漫、油画、黑白速写或夸张概念图。',
+        '每格都是正常上色的真人写实影视画面，真实皮肤与五官、可信表演、合理机位焦段、清楚前中后景、自然景深、摄影机透视和真实光源，统一克制的电影调色。不是黑白速写、导演手绘、漫画、动漫、油画或概念草图。',
+        '【明确排除导演标注】',
+        '不要绘制红色、蓝色、绿色、橙色或紫色箭头和线框，不要绘制彩色导演图例，不要添加PREVIS手绘标注，不要添加镜头调度箭头；本模板只输出彩色真人分镜画面。',
         '【排版】',
-        `16:9横版、横幅2K，严格${gridLayout}，从左到右、从上到下编号01—${String(panelCount).padStart(2, '0')}。每格只保留阿拉伯数字编号，不生成彩色箭头、导演图例、字幕、对话气泡、水印或大段文字。`
+        `16:9横版、横幅2K，严格${gridLayout}，从左到右、从上到下编号01—${String(panelCount).padStart(2, '0')}。每格只保留阿拉伯数字编号或极短黑色镜头标签，不生成彩色箭头、导演图例、字幕、对话气泡、水印或大段文字。`
     ].filter(Boolean).join('\n');
 }
 
@@ -2614,6 +3021,8 @@ function createSmartPreviewFromStoryboardShot(cardId, requestedPanelCount=9, req
     target.sizeHint = '整段故事板';
     target.storyboardGridCount = panelCount;
     target.storyboardPreviewStyle = previewStyle;
+    target.storyboardPromptVersion = STORYBOARD_PROMPT_VERSION;
+    target.storyboardPromptProfile = `${previewStyle}-${panelCount}`;
     target.storyboardImagePrompt = prompt;
     target.storyboardVideoPrompt = smartStoryboardPromptWithAssetMentions(source, storyboardVideoGenerationPrompt(source));
     selectedId = target.id;
@@ -3081,11 +3490,11 @@ function bindShotAssetCollectorControls(el, node){
             if(state) state.assetTop = pickerResults.scrollTop || 0;
         });
     }
-    el.querySelectorAll('.storyboard-control, .shot-asset-toggle, .shot-asset-check, .shot-asset-no-asset, .shot-asset-purpose, .shot-asset-priority, .shot-continuity-confirm, .shot-asset-category-tab, .shot-asset-demand-row, .shot-asset-open-demand, .shot-asset-picker-query, .shot-asset-match-sort, .shot-asset-prompt-box, .shot-asset-prompt-head, .shot-asset-prompt-text, .shot-asset-prompt-actions button, .shot-asset-ai-recommend, .shot-asset-group-toggle, .shot-asset-group-select-all').forEach(control => {
+    el.querySelectorAll('.storyboard-control, .shot-asset-toggle, .shot-asset-check, .shot-asset-picker-card, .shot-asset-picker-thumb, .shot-asset-picker-name, .shot-asset-no-asset, .shot-asset-purpose, .shot-asset-priority, .shot-continuity-confirm, .shot-asset-category-tab, .shot-asset-demand-row, .shot-asset-open-demand, .shot-asset-picker-query, .shot-asset-match-sort, .shot-asset-prompt-box, .shot-asset-prompt-head, .shot-asset-prompt-text, .shot-asset-prompt-actions button, .shot-asset-ai-recommend, .shot-asset-ai-scenes, .shot-asset-group-toggle, .shot-asset-group-select-all').forEach(control => {
         control.addEventListener('mousedown', e => e.stopPropagation());
         control.addEventListener('click', e => e.stopPropagation());
         control.addEventListener('dblclick', e => e.stopPropagation());
-        if(control.matches('.shot-asset-check, .shot-asset-group-toggle, .shot-asset-group-select-all, .shot-asset-category-tab, .shot-asset-open-demand')){
+        if(control.matches('.shot-asset-check, .shot-asset-picker-card, .shot-asset-picker-thumb, .shot-asset-picker-name, .shot-asset-group-toggle, .shot-asset-group-select-all, .shot-asset-category-tab, .shot-asset-open-demand')){
             control.addEventListener('pointerdown', () => savePickerScroll(), {capture:true});
         }
     });
@@ -3233,6 +3642,26 @@ function bindShotAssetCollectorControls(el, node){
             render();
             scheduleSave();
         };
+    });
+    el.querySelectorAll('.shot-asset-ai-scenes[data-shot-asset-scene-action="analyze"]').forEach(btn => {
+        btn.onclick = e => {
+            e.preventDefault();
+            e.stopPropagation();
+            savePickerScroll();
+            analyzeShotScenesWithAi(node, {force:true});
+        };
+    });
+    el.querySelectorAll('.shot-asset-picker-card').forEach(card => {
+        card.addEventListener('click', e => {
+            // 资产卡是 label，手动接管点击，避免浏览器默认行为和画布事件各触发一次。
+            if(e.target?.closest?.('.shot-asset-check')) return;
+            e.preventDefault();
+            e.stopPropagation();
+            const input = card.querySelector('.shot-asset-check');
+            if(!input) return;
+            input.checked = !input.checked;
+            input.dispatchEvent(new Event('change', {bubbles:false}));
+        });
     });
     el.querySelectorAll('.shot-asset-no-asset').forEach(input => {
         input.onchange = e => {
@@ -3435,6 +3864,10 @@ function ensureAutoShotAssetCollector(source){
         title:'故事板人物收集器',
         assetMatchSort:'desc',
         assetIdentityAliases:{},
+        sceneRegistry:[],
+        sceneAssignments:{},
+        sceneAnalysisSignature:'',
+        sceneAnalysisRunning:false,
         sourceStoryboardId:source.id,
         shotAssetBindings:{},
         shotAssetNoAsset:{},
@@ -3503,6 +3936,10 @@ function createSmartStoryboardOutputs(source, shots){
         title:'故事板人物收集器',
         assetMatchSort:'desc',
         assetIdentityAliases:{},
+        sceneRegistry:[],
+        sceneAssignments:{},
+        sceneAnalysisSignature:'',
+        sceneAnalysisRunning:false,
         sourceStoryboardId:source.id,
         shotAssetBindings:{},
         shotAssetNoAsset:{},
@@ -3945,6 +4382,9 @@ Object.assign(window, {
   smartAssetCategoryLabel,
   smartAssetNameParts,
   smartStoryboardAssetText,
+  shotAssetSceneFallback,
+  shotAssetSceneForCard,
+  shotAssetSceneAnalysisSignature,
   smartStoryboardAssetFields,
   smartAssetConnectedNodeIds,
   smartAssetHubImageRecords,
@@ -3959,6 +4399,7 @@ Object.assign(window, {
   storyboardGroupAssetCandidatesFor,
   storyboardManualAssetCandidates,
   storyboardManualAssetRefsFor,
+  storyboardUniqueRefs,
   shotAssetDemandKey,
   shotAssetDemandTypeLabel,
   shotAssetCardLabel,
@@ -4004,8 +4445,11 @@ Object.assign(window, {
   shotAssetRecommendationItems,
   shotAssetRecommendationFor,
   shotAssetRecommendationBarHtml,
+  shotAssetSceneAnalysisBarHtml,
   normalizeShotAssetRecommendations,
   recommendShotAssetsWithAi,
+  normalizeShotSceneAnalysis,
+  analyzeShotScenesWithAi,
   shotAssetPickerHtml,
   shotAssetCollectorsForCard,
   shotAssetCollectorForCard,
