@@ -217,6 +217,8 @@ function createShotAssetCollectorNode(x, y, options={}){
         h:560,
         shotAssetLayoutVersion:3,
         title:'故事板人物收集器',
+        assetMatchSort:'desc',
+        assetIdentityAliases:{},
         shotAssetBindings:{},
         shotAssetNoAsset:{},
         continuityOverrides:{},
@@ -1040,6 +1042,111 @@ function shotAssetPickerCandidateLabel(candidate){
     return `${candidate?.name || candidate?.alias || '参考图'} · ${source}${candidate?.categoryName ? ` · ${candidate.categoryName}` : ''}`;
 }
 
+function shotAssetMatchSort(collector){
+    return collector?.assetMatchSort === 'asc' ? 'asc' : 'desc';
+}
+
+function shotAssetDemandAliases(collector, demand){
+    const maps = [collector?.assetIdentityAliases, demand?.aliases];
+    const values = [];
+    maps.forEach(map => {
+        if(!map || typeof map !== 'object') return;
+        const raw = map[demand?.key] ?? map[demand?.label];
+        (Array.isArray(raw) ? raw : [raw]).forEach(value => {
+            const text = String(value || '').trim();
+            if(text && text !== demand?.label && !values.includes(text)) values.push(text);
+        });
+    });
+    return values;
+}
+
+function shotAssetSafeAliasMatch(demandNames, candidateNames){
+    const genericSuffixes = new Set(['妈妈','爸爸','姐姐','哥哥','老师','同事']);
+    const protectedPrefixes = new Set(['阿','小','老','大']);
+    let best = null;
+    demandNames.forEach(demandName => {
+        candidateNames.forEach(candidateName => {
+            if(!demandName || !candidateName || demandName === candidateName) return;
+            let suffixLength = 0;
+            const max = Math.min(demandName.length, candidateName.length);
+            while(suffixLength < max && demandName[demandName.length - 1 - suffixLength] === candidateName[candidateName.length - 1 - suffixLength]) suffixLength += 1;
+            if(suffixLength < 1) return;
+            const suffix = demandName.slice(demandName.length - suffixLength);
+            if(suffixLength <= 2 && genericSuffixes.has(suffix)) return;
+            const shortNameAlias = demandName.length === 2 && candidateName.length === 2 && suffixLength === 1
+                && protectedPrefixes.has(demandName[0]) && protectedPrefixes.has(candidateName[0]);
+            if(suffixLength < 2 && !shortNameAlias) return;
+            const confidence = shortNameAlias ? .82 : .86;
+            if(!best || confidence > best.confidence){
+                best = {
+                    confidence,
+                    reason:`名称尾部“${suffix}”一致，可能是同一人物的别名，请确认`,
+                    matchType:'name-alias'
+                };
+            }
+        });
+    });
+    return best;
+}
+
+function shotAssetMatchForCandidate(collector, demand, candidate){
+    if(!collector || !demand || !candidate?.url) return {confidence:0, reason:'未匹配', matchType:'unmatched'};
+    const candidateKey = shotAssetCandidateKey(candidate);
+    if(shotAssetCollectorBindingKeys(collector, demand.key).has(candidateKey)){
+        return {confidence:1, reason:'你已经手动确认过这张资产', matchType:'confirmed'};
+    }
+    const recommendation = shotAssetRecommendationFor(collector, demand.key, candidateKey);
+    const demandNames = [demand.label, ...shotAssetDemandAliases(collector, demand)]
+        .map(smartAssetTextKey)
+        .filter(Boolean);
+    const candidateNames = [candidate.name, candidate.alias, candidate.assetLabel]
+        .map(smartAssetTextKey)
+        .filter(Boolean);
+    const exactName = candidateNames.some(name => demandNames.includes(name));
+    const groupName = smartAssetTextKey(shotAssetPickerCandidateGroup(candidate, demand));
+    const exactGroup = demandNames.includes(groupName);
+    let local = {confidence:0, reason:'暂未匹配', matchType:'unmatched'};
+    if(exactName){
+        local = {confidence:1, reason:'人物名称或别名完全一致', matchType:'exact'};
+    } else if(exactGroup){
+        local = {confidence:.92, reason:'资产名称包含该人物名，并带有特写、四视图等补充信息', matchType:'name-variant'};
+    }
+    const alias = shotAssetSafeAliasMatch(demandNames, [...candidateNames, groupName].filter(Boolean));
+    if(alias && alias.confidence > local.confidence) local = alias;
+    if(!recommendation) return local;
+    const ai = {
+        confidence:Math.max(0, Math.min(1, Number(recommendation.confidence) || 0)),
+        reason:String(recommendation.reason || 'AI认为该资产与当前人物可能相关').trim(),
+        matchType:String(recommendation.matchType || 'ai').trim() || 'ai'
+    };
+    return ai.confidence > local.confidence ? ai : local;
+}
+
+function shotAssetMatchBadgeHtml(match){
+    const confidence = Math.max(0, Math.min(1, Number(match?.confidence) || 0));
+    if(confidence <= 0) return '<em class="shot-asset-match-badge none">未匹配</em>';
+    const percent = Math.round(confidence * 100);
+    const level = percent >= 90 ? 'high' : percent >= 70 ? 'possible' : 'low';
+    return `<em class="shot-asset-match-badge ${level}">匹配 ${percent}%</em>`;
+}
+
+function shotAssetRecommendationSignature(collector){
+    const demands = shotAssetCollectorDemands(collector).map(item => ({key:item.key, type:item.type, label:item.label}));
+    const candidates = shotAssetCollectorCandidates(collector).map(item => ({
+        key:shotAssetCandidateKey(item),
+        name:item.name || '',
+        alias:item.alias || '',
+        category:item.categoryName || '',
+        type:shotAssetPickerCandidateCategory(item)
+    }));
+    return JSON.stringify({demands, candidates});
+}
+
+function shotAssetRecommendationsNeedRefresh(collector){
+    if(!collector?.assetRecommendations || collector.assetRecommendationRunning) return false;
+    return collector.assetRecommendationSignature !== shotAssetRecommendationSignature(collector);
+}
+
 function shotAssetDefaultGenerationPrompt(demand){
     const label = String(demand?.label || '').trim() || (shotAssetDemandCategory(demand) === 'scene' ? '场景' : '人物');
     if(shotAssetDemandCategory(demand) === 'scene'){
@@ -1114,20 +1221,26 @@ function normalizeShotAssetRecommendations(payload, demandById, candidateById){
         const demand = demandById.get(String(item?.demandId || ''));
         if(!demand) return;
         const demandCategory = shotAssetDemandCategory(demand);
-        const ids = Array.isArray(item?.assetIds) ? item.assetIds : item?.assetId ? [item.assetId] : [];
-        const confidenceValue = Number(item?.confidence);
-        const confidence = Number.isFinite(confidenceValue) ? Math.max(0, Math.min(1, confidenceValue > 1 ? confidenceValue / 100 : confidenceValue)) : 0.5;
-        ids.forEach(assetId => {
+        const entries = Array.isArray(item?.matches)
+            ? item.matches.map(match => ({...item, ...match, assetId:match?.assetId || match?.id}))
+            : item?.assetId
+            ? [item]
+            : (Array.isArray(item?.assetIds) ? item.assetIds.map(assetId => ({...item, assetId})) : []);
+        entries.forEach(entry => {
+            const assetId = entry?.assetId;
             const candidate = candidateById.get(String(assetId || ''));
             if(!candidate || shotAssetPickerCandidateCategory(candidate) !== demandCategory) return;
             const candidateKey = shotAssetCandidateKey(candidate);
             if(!candidateKey) return;
             if(!Array.isArray(byDemand[demand.key])) byDemand[demand.key] = [];
             if(byDemand[demand.key].some(entry => entry.candidateKey === candidateKey)) return;
+            const confidenceValue = Number(entry?.confidence);
+            const confidence = Number.isFinite(confidenceValue) ? Math.max(0, Math.min(1, confidenceValue > 1 ? confidenceValue / 100 : confidenceValue)) : 0.5;
             byDemand[demand.key].push({
                 candidateKey,
                 confidence,
-                reason:String(item?.reason || '名称与镜头需求相符，建议人工确认画面内容。').trim(),
+                reason:String(entry?.reason || '名称与镜头需求相符，建议人工确认画面内容。').trim(),
+                matchType:String(entry?.matchType || 'ai').trim() || 'ai',
                 recommendedAt:Date.now()
             });
         });
@@ -1136,8 +1249,10 @@ function normalizeShotAssetRecommendations(payload, demandById, candidateById){
     return {summary:String(raw.summary || '').trim(), byDemand};
 }
 
-async function recommendShotAssetsWithAi(collector){
+async function recommendShotAssetsWithAi(collector, options={}){
     if(!collector || collector.assetRecommendationRunning) return;
+    const inputSignature = shotAssetRecommendationSignature(collector);
+    if(!options.force && collector.assetRecommendations && collector.assetRecommendationSignature === inputSignature) return;
     const demands = shotAssetCollectorDemands(collector).filter(demand => ['character','scene'].includes(shotAssetDemandCategory(demand)));
     const candidates = shotAssetCollectorCandidates(collector).filter(candidate => ['character','scene'].includes(shotAssetPickerCandidateCategory(candidate)));
     if(!demands.length){ toast('当前没有可匹配的人物或场景需求'); return; }
@@ -1157,7 +1272,7 @@ async function recommendShotAssetsWithAi(collector){
                 scene:smartStoryboardAssetFields(card.shot || {}).scene || '',
                 purpose:card.shot?.purpose || ''
             }));
-        return {id, type:shotAssetDemandCategory(demand), name:demand.label, storyboards:demand.shotLabels, context};
+        return {id, type:shotAssetDemandCategory(demand), name:demand.label, aliases:shotAssetDemandAliases(collector, demand), storyboards:demand.shotLabels, context};
     });
     const candidateRows = candidates.slice(0, 120).map((candidate, index) => {
         const id = `A${index + 1}`;
@@ -1166,13 +1281,16 @@ async function recommendShotAssetsWithAi(collector){
             id,
             type:shotAssetPickerCandidateCategory(candidate),
             name:candidate.name || candidate.alias || '未命名资产',
+            alias:candidate.alias || '',
             group:shotAssetPickerCandidateGroup(candidate),
             source:candidate.source || 'canvas',
-            category:candidate.categoryName || ''
+            category:candidate.categoryName || '',
+            remark:candidate.remark || candidate.description || candidate.notes || '',
+            tags:Array.isArray(candidate.tags) ? candidate.tags : []
         };
     });
     const message = JSON.stringify({demands:demandRows, candidates:candidateRows}, null, 2);
-    const systemPrompt = `你是真人情感短剧的资产匹配助手。根据需求名称、镜头上下文、候选资产名称与分组，给出“建议人工勾选”的匹配结果。规则：1. 人物只能推荐人物候选，场景只能推荐场景候选；2. 同一人物可推荐特写、四视图等多张互补资产；3. 不因共享一个普通词就强行匹配；4. 不确定时该需求不推荐；5. 绝对不能把道具、服装、婚礼迎宾牌、外卖袋等当成人物；6. 只返回输入中存在的D和A编号。只输出JSON：{"summary":"一句话说明","recommendations":[{"demandId":"D1","assetIds":["A1","A2"],"confidence":0.92,"reason":"简短具体理由"}]}。`;
+    const systemPrompt = `你是真人情感短剧的资产匹配助手。根据需求人物名称、别名、镜头上下文、候选资产名称、备注与分组，逐张给出“建议人工勾选”的匹配结果。规则：1. 人物只能推荐人物候选，场景只能推荐场景候选；2. 同一人物可推荐特写、四视图等多张互补资产；3. 阿野、小野只有在别名或上下文明确支持时才可视为可能同一人物；4. 阿涛与阿野不能因为都含有“阿”或共享普通字就合并；5. 不确定时给低分或不返回；6. 绝对不能把道具、服装、婚礼迎宾牌、外卖袋等当成人物；7. 每张资产单独返回confidence，不要让多张资产共用一个分数；8. 只返回输入中存在的D和A编号。只输出JSON：{"summary":"一句话说明","recommendations":[{"demandId":"D1","assetId":"A1","confidence":0.92,"matchType":"alias","reason":"简短具体理由"}]}。`;
     collector.assetRecommendationRunning = true;
     render();
     try {
@@ -1182,6 +1300,7 @@ async function recommendShotAssetsWithAi(collector){
         if(!payload) throw new Error('AI没有返回可解析的资产建议');
         const normalized = normalizeShotAssetRecommendations(payload, demandById, candidateById);
         collector.assetRecommendations = {...normalized, provider:result.provider, model:result.model, generatedAt:Date.now()};
+        collector.assetRecommendationSignature = inputSignature;
         const count = Object.values(normalized.byDemand).reduce((sum, items) => sum + items.length, 0);
         toast(count ? `AI已标出 ${count} 项候选，请手动确认` : 'AI没有发现足够可靠的匹配，未改动任何绑定');
         scheduleSave();
@@ -1201,53 +1320,44 @@ function shotAssetPickerHtml(collector){
     const bindings = demand ? shotAssetBindingsForCategory(collector, demand, category) : [];
     const selectedKeys = new Set(bindings.flatMap(item => referenceImageDedupeKeys(item)).filter(Boolean));
     const query = String(state.query || '').trim().toLowerCase();
+    const matchSort = shotAssetMatchSort(collector);
     const filtered = shotAssetCollectorCandidates(collector)
         .map(candidate => ({
             candidate,
             key:shotAssetCandidateKey(candidate),
             category:shotAssetPickerCandidateCategory(candidate),
             group:shotAssetPickerCandidateGroup(candidate, demand),
-            label:shotAssetPickerCandidateLabel(candidate)
+            label:shotAssetPickerCandidateLabel(candidate),
+            match:shotAssetMatchForCandidate(collector, demand, candidate)
         }))
         .filter(item => item.category === category)
         .filter(item => {
             if(!query) return true;
             return [item.label, item.group, item.candidate?.alias, item.candidate?.categoryName].join(' ').toLowerCase().includes(query);
         });
-    const groups = new Map();
-    filtered.forEach(item => {
-        const group = item.group || '未分组';
-        if(!groups.has(group)) groups.set(group, []);
-        groups.get(group).push(item);
+    filtered.sort((a, b) => {
+        const scoreDiff = matchSort === 'asc' ? a.match.confidence - b.match.confidence : b.match.confidence - a.match.confidence;
+        if(scoreDiff) return scoreDiff;
+        return String(a.label).localeCompare(String(b.label), 'zh-CN');
     });
     const selectedHtml = bindings.length ? bindings.map(binding => {
         const key = escapeAttr(binding.candidateKey || binding.url || '');
         const usage = shotAssetReadableUsageLabel(demand, binding);
         return `<span class="shot-asset-selected-chip" data-candidate-key="${key}">${escapeHtml(binding.name || binding.alias || '已绑定资产')}<em>${escapeHtml(usage)}</em></span>`;
     }).join('') : '<div class="shot-asset-picker-empty compact">未选择参考图</div>';
-    const groupsHtml = demand ? [...groups.entries()].map(([group, items]) => {
-        const groupKey = String(group || '未分组');
-        const collapsed = state.collapsedGroups?.[groupKey] === true;
-        const allSelected = items.length > 0 && items.every(item => referenceImageDedupeKeys({...item.candidate, assetCandidateKey:item.key}).some(key => selectedKeys.has(key)));
-        return `<section class="shot-asset-picker-group ${collapsed ? 'collapsed' : ''}" data-group-key="${escapeAttr(groupKey)}">
-        <div class="shot-asset-picker-group-title">
-            <button class="shot-asset-group-toggle" type="button" data-group-key="${escapeAttr(groupKey)}" aria-expanded="${collapsed ? 'false' : 'true'}"><span class="shot-asset-group-chevron">${collapsed ? '›' : '⌄'}</span>${escapeHtml(groupKey)}<em>${items.length}</em></button>
-            <button class="shot-asset-group-select-all" type="button" data-group-key="${escapeAttr(groupKey)}">${allSelected ? '取消全选' : '全选本组'}</button>
-        </div>
+    const groupsHtml = demand ? `<section class="shot-asset-picker-group shot-asset-picker-group-flat" data-group-key="__all__">
         <div class="shot-asset-picker-grid">
-            ${items.map(item => {
+            ${filtered.map(item => {
                 const checked = referenceImageDedupeKeys({...item.candidate, assetCandidateKey:item.key}).some(key => selectedKeys.has(key));
-                const recommendation = shotAssetRecommendationFor(collector, demand.key, item.key);
-                const recommendationTitle = recommendation ? `${item.label}；AI建议：${recommendation.reason}` : item.label;
-                return `<label class="shot-asset-picker-card ${checked ? 'selected' : ''} ${recommendation ? 'ai-recommended' : ''}" title="${escapeAttr(recommendationTitle)}">
+                const recommendationTitle = `${item.label}；${item.match.reason}`;
+                return `<label class="shot-asset-picker-card ${checked ? 'selected' : ''} ${item.match.confidence > 0 ? 'ai-recommended' : ''}" title="${escapeAttr(recommendationTitle)}">
                     <input class="shot-asset-check" type="checkbox" data-demand-key="${escapeAttr(demand.key)}" data-candidate-key="${escapeAttr(item.key)}" ${checked ? 'checked' : ''}>
                     <span class="shot-asset-picker-thumb">${item.candidate?.url ? `<img src="${escapeAttr(item.candidate.url)}" alt="">` : ''}</span>
-                    <span class="shot-asset-picker-name">${escapeHtml(item.label)}${recommendation ? `<em class="shot-asset-ai-badge">AI推荐 ${Math.round(recommendation.confidence * 100)}%</em>` : ''}</span>
+                    <span class="shot-asset-picker-name">${escapeHtml(item.label)}${shotAssetMatchBadgeHtml(item.match)}</span>
                 </label>`;
             }).join('')}
         </div>
-    </section>`;
-    }).join('') : '';
+    </section>` : '';
     const emptyCandidateMessage = demand
         ? `当前没有可绑定的${shotAssetPickerCategoryLabel(category)}图。请把图片加入项目资产库、连入收集器，或使用下方“创建生图节点”。`
         : `左侧选择一个${shotAssetPickerCategoryLabel(category)}需求后再绑定资产`;
@@ -1257,6 +1367,7 @@ function shotAssetPickerHtml(collector){
                 <b>${escapeHtml(shotAssetPickerCategoryLabel(category))}资产</b>
                 <span>${demand ? `${escapeHtml(demand.label)} · ${bindings.length} 张已选` : `当前分类暂无需求`}</span>
             </div>
+            <button class="shot-asset-match-sort" type="button" data-match-sort="${matchSort}" title="切换匹配度排序">匹配度 ${matchSort === 'asc' ? '↑' : '↓'}</button>
         </div>
         <input class="shot-asset-picker-query" value="${escapeAttr(state.query || '')}" placeholder="搜索资产名 / 角色名 / 分组">
         <div class="shot-asset-picker-selected">${selectedHtml}</div>
@@ -2970,7 +3081,7 @@ function bindShotAssetCollectorControls(el, node){
             if(state) state.assetTop = pickerResults.scrollTop || 0;
         });
     }
-    el.querySelectorAll('.storyboard-control, .shot-asset-toggle, .shot-asset-check, .shot-asset-no-asset, .shot-asset-purpose, .shot-asset-priority, .shot-continuity-confirm, .shot-asset-category-tab, .shot-asset-demand-row, .shot-asset-open-demand, .shot-asset-picker-query, .shot-asset-prompt-box, .shot-asset-prompt-head, .shot-asset-prompt-text, .shot-asset-prompt-actions button, .shot-asset-ai-recommend, .shot-asset-group-toggle, .shot-asset-group-select-all').forEach(control => {
+    el.querySelectorAll('.storyboard-control, .shot-asset-toggle, .shot-asset-check, .shot-asset-no-asset, .shot-asset-purpose, .shot-asset-priority, .shot-continuity-confirm, .shot-asset-category-tab, .shot-asset-demand-row, .shot-asset-open-demand, .shot-asset-picker-query, .shot-asset-match-sort, .shot-asset-prompt-box, .shot-asset-prompt-head, .shot-asset-prompt-text, .shot-asset-prompt-actions button, .shot-asset-ai-recommend, .shot-asset-group-toggle, .shot-asset-group-select-all').forEach(control => {
         control.addEventListener('mousedown', e => e.stopPropagation());
         control.addEventListener('click', e => e.stopPropagation());
         control.addEventListener('dblclick', e => e.stopPropagation());
@@ -2985,6 +3096,15 @@ function bindShotAssetCollectorControls(el, node){
         savePickerScroll();
         scheduleSave();
         toast('资产绑定已保存');
+    };
+    const sortButton = el.querySelector('.shot-asset-match-sort');
+    if(sortButton) sortButton.onclick = e => {
+        e.preventDefault();
+        e.stopPropagation();
+        savePickerScroll();
+        node.assetMatchSort = shotAssetMatchSort(node) === 'asc' ? 'desc' : 'asc';
+        render();
+        scheduleSave();
     };
     el.querySelectorAll('.shot-asset-category-tab').forEach(btn => {
         btn.onclick = e => {
@@ -3003,6 +3123,7 @@ function bindShotAssetCollectorControls(el, node){
                 state.assetTop = 0;
             }
             render();
+            if(!node.assetRecommendations || shotAssetRecommendationsNeedRefresh(node)) recommendShotAssetsWithAi(node);
         };
     });
     el.querySelectorAll('.shot-asset-group-toggle').forEach(btn => {
@@ -3049,6 +3170,7 @@ function bindShotAssetCollectorControls(el, node){
                 state.assetTop = 0;
             }
             render();
+            if(!node.assetRecommendations || shotAssetRecommendationsNeedRefresh(node)) recommendShotAssetsWithAi(node);
         };
     });
     el.querySelectorAll('.shot-asset-open-demand').forEach(btn => {
@@ -3062,6 +3184,7 @@ function bindShotAssetCollectorControls(el, node){
                 state.assetTop = 0;
             }
             render();
+            if(!node.assetRecommendations || shotAssetRecommendationsNeedRefresh(node)) recommendShotAssetsWithAi(node);
         };
     });
     const query = el.querySelector('.shot-asset-picker-query');
@@ -3097,7 +3220,7 @@ function bindShotAssetCollectorControls(el, node){
             e.preventDefault();
             e.stopPropagation();
             savePickerScroll();
-            recommendShotAssetsWithAi(node);
+            recommendShotAssetsWithAi(node, {force:true});
         };
     });
     el.querySelectorAll('.shot-asset-check').forEach(input => {
@@ -3310,6 +3433,8 @@ function ensureAutoShotAssetCollector(source){
         h:560,
         shotAssetLayoutVersion:3,
         title:'故事板人物收集器',
+        assetMatchSort:'desc',
+        assetIdentityAliases:{},
         sourceStoryboardId:source.id,
         shotAssetBindings:{},
         shotAssetNoAsset:{},
@@ -3376,6 +3501,8 @@ function createSmartStoryboardOutputs(source, shots){
         h:560,
         shotAssetLayoutVersion:3,
         title:'故事板人物收集器',
+        assetMatchSort:'desc',
+        assetIdentityAliases:{},
         sourceStoryboardId:source.id,
         shotAssetBindings:{},
         shotAssetNoAsset:{},
