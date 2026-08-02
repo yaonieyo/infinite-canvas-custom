@@ -213,8 +213,9 @@ function createShotAssetCollectorNode(x, y, options={}){
         type:'shot-asset-collector',
         x,
         y,
-        w:560,
-        h:650,
+        w:820,
+        h:560,
+        shotAssetLayoutVersion:3,
         title:'故事板人物收集器',
         shotAssetBindings:{},
         shotAssetNoAsset:{},
@@ -990,13 +991,14 @@ function shotAssetPickerEnsureState(collector, demandKey=''){
     const categoryDemands = shotAssetPickerDemandsForCategory(collector, category);
     const fallbackDemand = incomingDemand?.key || (previousDemand && shotAssetDemandCategory(previousDemand) === category ? previousDemand.key : '') || categoryDemands[0]?.key || demands[0]?.key || '';
     if(!state){
-        state = {collectorId:collector.id, demandKey:fallbackDemand, category, query:'', bodyTop:0, demandTop:0, assetTop:0, demandByCategory:{}};
+        state = {collectorId:collector.id, demandKey:fallbackDemand, category, query:'', bodyTop:0, demandTop:0, assetTop:0, demandByCategory:{}, collapsedGroups:{}};
         shotAssetPickerStates.set(collector.id, state);
     } else {
         state.demandKey = fallbackDemand;
         state.category = category || state.category || 'character';
         state.query = state.query || '';
         if(!state.demandByCategory || typeof state.demandByCategory !== 'object') state.demandByCategory = {};
+        if(!state.collapsedGroups || typeof state.collapsedGroups !== 'object') state.collapsedGroups = {};
     }
     if(fallbackDemand) state.demandByCategory[category] = fallbackDemand;
     return state;
@@ -1065,8 +1067,9 @@ function shotAssetPromptBoxHtml(collector, demand){
     if(!demand) return '';
     const record = shotAssetPromptRecord(collector, demand);
     const optimizing = collector.assetPromptOptimizingKey === demand.key;
-    return `<div class="shot-asset-prompt-box" data-asset-prompt-demand="${escapeAttr(demand.key)}">
-        <div class="shot-asset-prompt-head"><b>单独生成${escapeHtml(shotAssetPickerCategoryLabel(shotAssetDemandCategory(demand)))}资产</b><span>${record.optimized ? '已有AI优化稿' : '提示词可编辑'}</span></div>
+    return `<details class="shot-asset-prompt-box" data-asset-prompt-demand="${escapeAttr(demand.key)}">
+        <summary class="shot-asset-prompt-head"><b>生成${escapeHtml(shotAssetPickerCategoryLabel(shotAssetDemandCategory(demand)))}资产提示词</b><span>${record.optimized ? '已有AI优化稿' : '默认折叠'}</span></summary>
+        <div class="shot-asset-prompt-content">
         <textarea class="shot-asset-prompt-text" data-demand-key="${escapeAttr(demand.key)}">${escapeHtml(record.current)}</textarea>
         <div class="shot-asset-prompt-actions">
             <button class="shot-asset-prompt-optimize" type="button" data-demand-key="${escapeAttr(demand.key)}" ${optimizing ? 'disabled' : ''}>${optimizing ? 'AI优化中...' : 'AI优化'}</button>
@@ -1074,7 +1077,8 @@ function shotAssetPromptBoxHtml(collector, demand){
             <button class="shot-asset-prompt-reset" type="button" data-demand-key="${escapeAttr(demand.key)}">恢复默认</button>
             <button class="shot-asset-prompt-create" type="button" data-demand-key="${escapeAttr(demand.key)}">创建生图节点</button>
         </div>
-    </div>`;
+        </div>
+    </details>`;
 }
 
 function shotAssetRecommendationItems(collector, demandKey){
@@ -1221,8 +1225,15 @@ function shotAssetPickerHtml(collector){
         const usage = shotAssetReadableUsageLabel(demand, binding);
         return `<span class="shot-asset-selected-chip" data-candidate-key="${key}">${escapeHtml(binding.name || binding.alias || '已绑定资产')}<em>${escapeHtml(usage)}</em></span>`;
     }).join('') : '<div class="shot-asset-picker-empty compact">未选择参考图</div>';
-    const groupsHtml = demand ? [...groups.entries()].map(([group, items]) => `<div class="shot-asset-picker-group">
-        <div class="shot-asset-picker-group-title">${escapeHtml(group)}<span>${items.length}</span></div>
+    const groupsHtml = demand ? [...groups.entries()].map(([group, items]) => {
+        const groupKey = String(group || '未分组');
+        const collapsed = state.collapsedGroups?.[groupKey] === true;
+        const allSelected = items.length > 0 && items.every(item => referenceImageDedupeKeys({...item.candidate, assetCandidateKey:item.key}).some(key => selectedKeys.has(key)));
+        return `<section class="shot-asset-picker-group ${collapsed ? 'collapsed' : ''}" data-group-key="${escapeAttr(groupKey)}">
+        <div class="shot-asset-picker-group-title">
+            <button class="shot-asset-group-toggle" type="button" data-group-key="${escapeAttr(groupKey)}" aria-expanded="${collapsed ? 'false' : 'true'}"><span class="shot-asset-group-chevron">${collapsed ? '›' : '⌄'}</span>${escapeHtml(groupKey)}<em>${items.length}</em></button>
+            <button class="shot-asset-group-select-all" type="button" data-group-key="${escapeAttr(groupKey)}">${allSelected ? '取消全选' : '全选本组'}</button>
+        </div>
         <div class="shot-asset-picker-grid">
             ${items.map(item => {
                 const checked = referenceImageDedupeKeys({...item.candidate, assetCandidateKey:item.key}).some(key => selectedKeys.has(key));
@@ -1235,7 +1246,8 @@ function shotAssetPickerHtml(collector){
                 </label>`;
             }).join('')}
         </div>
-    </div>`).join('') : '';
+    </section>`;
+    }).join('') : '';
     const emptyCandidateMessage = demand
         ? `当前没有可绑定的${shotAssetPickerCategoryLabel(category)}图。请把图片加入项目资产库、连入收集器，或使用下方“创建生图节点”。`
         : `左侧选择一个${shotAssetPickerCategoryLabel(category)}需求后再绑定资产`;
@@ -1517,7 +1529,15 @@ function shotAssetCollectorPreflightHtml(node){
     </div>`;
 }
 
+function migrateShotAssetCollectorLayout(node){
+    if(!node || node.type !== 'shot-asset-collector' || node.shotAssetLayoutVersion === 3) return;
+    node.w = 820;
+    node.h = 560;
+    node.shotAssetLayoutVersion = 3;
+}
+
 function shotAssetCollectorBodyHtml(node){
+    migrateShotAssetCollectorLayout(node);
     const cards = shotAssetCollectorCards(node);
     const demands = shotAssetCollectorDemands(node);
     const candidates = shotAssetCollectorCandidates(node);
@@ -1560,30 +1580,45 @@ function shotAssetCollectorBodyHtml(node){
         </div>`;
     }).join('');
     const boundCount = demands.reduce((sum, demand) => sum + shotAssetCollectorBindings(node, demand.key).length, 0);
+    const activeBindings = activeDemandKey ? shotAssetCollectorBindings(node, activeDemandKey) : [];
+    const activeBindingChips = activeBindings.slice(0, 6).map(item => `<span class="shot-asset-footer-chip">${escapeHtml(item.name || item.alias || '参考图')} <em>×</em></span>`).join('');
     const shotNames = cards.map(shotAssetCardLabel).slice(0, 12).join('、');
     const picker = shotAssetPickerHtml(node);
     return `<div class="shot-asset-collector-body">
-        <div class="shot-asset-title">故事板资产收集器</div>
-        <div class="shot-asset-sub">只保留人物和场景两类资产。选择后不回弹，参考图可多选，未绑定也可以继续生成。</div>
-        <div class="shot-asset-stats">
-            <span><b>${cards.length}</b>故事板</span>
-            <span><b>${demands.length}</b>需求</span>
-            <span><b>${boundCount}</b>已绑定</span>
-            <span><b>${candidates.length}</b>候选资产</span>
+        <div class="shot-asset-heading">
+            <div>
+                <div class="shot-asset-title">故事板资产收集器</div>
+                <div class="shot-asset-sub">按镜头需求选择人物和场景参考图，支持多选，不会跳回顶部。</div>
+            </div>
+            <div class="shot-asset-stats">
+                <span><b>${cards.length}</b>故事板</span>
+                <span><b>${demands.length}</b>需求</span>
+                <span><b>${boundCount}</b>已绑定</span>
+                <span><b>${candidates.length}</b>候选</span>
+            </div>
         </div>
-        <div class="shot-asset-switches">
-            <label><input class="shot-asset-toggle" data-shot-asset-key="useAssetLibrary" type="checkbox" ${node.useAssetLibrary === true && node.manualSelectionOnly === false ? 'checked' : ''}>读取项目资产库</label>
-            <label><input class="shot-asset-toggle" data-shot-asset-key="useCanvasInputs" type="checkbox" ${node.useCanvasInputs !== false ? 'checked' : ''}>读取连入图片</label>
-            <label><input class="shot-asset-toggle" data-shot-asset-key="inheritPrevious" type="checkbox" ${node.inheritPrevious !== false ? 'checked' : ''}>继承上一镜结束帧</label>
+        <div class="shot-asset-controlbar">
+            <div class="shot-asset-linked">故事板：${escapeHtml(shotNames || '未连接故事板')}</div>
+            <div class="shot-asset-switches">
+                <label title="从项目资产库读取人物和场景图片"><input class="shot-asset-toggle" data-shot-asset-key="useAssetLibrary" type="checkbox" ${node.useAssetLibrary === true && node.manualSelectionOnly === false ? 'checked' : ''}>项目资产库</label>
+                <label title="读取连入的图片节点"><input class="shot-asset-toggle" data-shot-asset-key="useCanvasInputs" type="checkbox" ${node.useCanvasInputs !== false ? 'checked' : ''}>连入图片</label>
+                <label title="把上一镜结束帧作为连续性参考"><input class="shot-asset-toggle" data-shot-asset-key="inheritPrevious" type="checkbox" ${node.inheritPrevious !== false ? 'checked' : ''}>上一镜结束帧</label>
+            </div>
         </div>
-        <div class="shot-asset-linked">故事板：${escapeHtml(shotNames || '未连接故事板')}</div>
         ${shotAssetRecommendationBarHtml(node)}
         <div class="shot-asset-category-tabs">${categoryTabs}</div>
         <div class="shot-asset-workspace">
-            <div class="shot-asset-demand-list">${rows || `<div class="shot-asset-empty">当前“${escapeHtml(shotAssetPickerCategoryLabel(activeCategory))}”分类暂无需求。</div>`}</div>
+            <div class="shot-asset-demand-list">
+                <div class="shot-asset-demand-list-head"><b>镜头需求</b><span>${categoryDemands.length} 项</span></div>
+                ${rows || `<div class="shot-asset-empty">当前“${escapeHtml(shotAssetPickerCategoryLabel(activeCategory))}”分类暂无需求。</div>`}
+            </div>
             ${picker}
         </div>
-        <div class="shot-asset-rule">绑定的人物/场景图片会在生成图片/视频时自动传入，并写成 @资产名；服装、道具、风格参考不再进入本收集器。</div>
+        <div class="shot-asset-footer">
+            <div class="shot-asset-footer-selected"><b>当前已选 ${activeBindings.length} 张</b>${activeBindingChips || '<span class="shot-asset-footer-empty">选择图片后会显示在这里</span>'}</div>
+            <button class="shot-asset-finish" type="button">完成绑定</button>
+        </div>
+        <div class="shot-asset-rule">仅人物和场景进入本收集器；服装、道具、风格参考由原节点自行处理。</div>
     </div>`;
 }
 
@@ -2935,11 +2970,22 @@ function bindShotAssetCollectorControls(el, node){
             if(state) state.assetTop = pickerResults.scrollTop || 0;
         });
     }
-    el.querySelectorAll('.storyboard-control, .shot-asset-toggle, .shot-asset-check, .shot-asset-no-asset, .shot-asset-purpose, .shot-asset-priority, .shot-continuity-confirm, .shot-asset-category-tab, .shot-asset-demand-row, .shot-asset-open-demand, .shot-asset-picker-query, .shot-asset-prompt-text, .shot-asset-prompt-actions button, .shot-asset-ai-recommend').forEach(control => {
+    el.querySelectorAll('.storyboard-control, .shot-asset-toggle, .shot-asset-check, .shot-asset-no-asset, .shot-asset-purpose, .shot-asset-priority, .shot-continuity-confirm, .shot-asset-category-tab, .shot-asset-demand-row, .shot-asset-open-demand, .shot-asset-picker-query, .shot-asset-prompt-box, .shot-asset-prompt-head, .shot-asset-prompt-text, .shot-asset-prompt-actions button, .shot-asset-ai-recommend, .shot-asset-group-toggle, .shot-asset-group-select-all').forEach(control => {
         control.addEventListener('mousedown', e => e.stopPropagation());
         control.addEventListener('click', e => e.stopPropagation());
         control.addEventListener('dblclick', e => e.stopPropagation());
+        if(control.matches('.shot-asset-check, .shot-asset-group-toggle, .shot-asset-group-select-all, .shot-asset-category-tab, .shot-asset-open-demand')){
+            control.addEventListener('pointerdown', () => savePickerScroll(), {capture:true});
+        }
     });
+    const finish = el.querySelector('.shot-asset-finish');
+    if(finish) finish.onclick = e => {
+        e.preventDefault();
+        e.stopPropagation();
+        savePickerScroll();
+        scheduleSave();
+        toast('资产绑定已保存');
+    };
     el.querySelectorAll('.shot-asset-category-tab').forEach(btn => {
         btn.onclick = e => {
             e.preventDefault();
@@ -2957,6 +3003,38 @@ function bindShotAssetCollectorControls(el, node){
                 state.assetTop = 0;
             }
             render();
+        };
+    });
+    el.querySelectorAll('.shot-asset-group-toggle').forEach(btn => {
+        btn.onclick = e => {
+            e.preventDefault();
+            e.stopPropagation();
+            const state = shotAssetPickerEnsureState(node);
+            if(!state) return;
+            const groupKey = btn.dataset.groupKey || '未分组';
+            savePickerScroll();
+            state.collapsedGroups[groupKey] = state.collapsedGroups[groupKey] !== true;
+            render();
+        };
+    });
+    el.querySelectorAll('.shot-asset-group-select-all').forEach(btn => {
+        btn.onclick = e => {
+            e.preventDefault();
+            e.stopPropagation();
+            const state = shotAssetPickerEnsureState(node);
+            const demand = shotAssetPickerActiveDemand(node);
+            if(!state || !demand) return;
+            const groupKey = btn.dataset.groupKey || '未分组';
+            const items = shotAssetCollectorCandidates(node)
+                .map(candidate => ({candidate, category:shotAssetPickerCandidateCategory(candidate), group:shotAssetPickerCandidateGroup(candidate, demand), key:shotAssetCandidateKey(candidate)}))
+                .filter(item => item.category === state.category && item.group === groupKey && item.key);
+            if(!items.length) return;
+            const selectedKeys = shotAssetCollectorBindingKeys(node, demand.key);
+            const shouldSelect = !items.every(item => selectedKeys.has(item.key));
+            savePickerScroll();
+            items.forEach(item => toggleShotAssetCollectorBinding(node, demand.key, item.candidate, shouldSelect));
+            render();
+            scheduleSave();
         };
     });
     el.querySelectorAll('.shot-asset-demand-row').forEach(row => {
@@ -3227,9 +3305,10 @@ function ensureAutoShotAssetCollector(source){
         id:uid('shotAssets'),
         type:'shot-asset-collector',
         x:baseX,
-        y:Math.max(40, baseY - 720),
-        w:560,
-        h:650,
+        y:Math.max(40, baseY - 620),
+        w:820,
+        h:560,
+        shotAssetLayoutVersion:3,
         title:'故事板人物收集器',
         sourceStoryboardId:source.id,
         shotAssetBindings:{},
@@ -3292,9 +3371,10 @@ function createSmartStoryboardOutputs(source, shots){
         id:uid('shotAssets'),
         type:'shot-asset-collector',
         x:baseX,
-        y:Math.max(40, baseY - 720),
-        w:560,
-        h:650,
+        y:Math.max(40, baseY - 620),
+        w:820,
+        h:560,
+        shotAssetLayoutVersion:3,
         title:'故事板人物收集器',
         sourceStoryboardId:source.id,
         shotAssetBindings:{},
