@@ -7448,6 +7448,35 @@ function posterFrameRunSizeLabel(runSettings){
     const size = apiImageSize(runSettings?.ratio || 'square', runSettings?.resolution || '1k', runSettings?.customRatio || '', runSettings?.customSize || '');
     return [ratio, resolution, size].filter(Boolean).join(' · ');
 }
+function posterFrameAspectRatio(runSettings){
+    const named = {
+        square:'1 / 1',
+        poster45:'4 / 5',
+        portrait43:'3 / 4',
+        portrait:'2 / 3',
+        story:'9 / 16',
+        landscape54:'5 / 4',
+        landscape43:'4 / 3',
+        wide:'16 / 9',
+        landscape:'3 / 2',
+        ultrawide:'21 / 9',
+        ultratall:'9 / 21'
+    };
+    const raw = String(runSettings?.ratio || runSettings?.aspectRatio || runSettings?.aspect_ratio || runSettings?.customRatio || '').trim().toLowerCase();
+    if(named[raw]) return named[raw];
+    const match = raw.match(/^(\d+(?:\.\d+)?)\s*[:/]\s*(\d+(?:\.\d+)?)$/);
+    return match ? `${match[1]} / ${match[2]}` : '16 / 9';
+}
+function posterFrameOutputStyle(runSettings){
+    const aspectRatio = posterFrameAspectRatio(runSettings);
+    const match = aspectRatio.match(/^(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)$/);
+    const ratioWidth = match ? Number(match[1]) : 16;
+    const ratioHeight = match ? Number(match[2]) : 9;
+    // Keep the preview useful without making the action row disappear below a tall node.
+    const maxPreviewHeight = 170;
+    const maxPreviewWidth = Math.max(80, Math.floor(maxPreviewHeight * ratioWidth / ratioHeight));
+    return `--poster-frame-output-aspect-ratio:${escapeAttr(aspectRatio)};--poster-frame-output-max-width:${maxPreviewWidth}px`;
+}
 function posterFrameRatioFromText(text){
     const value = String(text || '').toLowerCase();
     if(!value) return '';
@@ -7527,9 +7556,10 @@ function posterFrameBodyHtml(node){
     const imgs = (node.images || []).map(imageForDisplay).filter(img => img?.url);
     const first = imgs[0] || null;
     const running = Boolean(node.pending || node.running || node.jimengPending || smartPendingTasks(node).length);
+    const aspectStyle = posterFrameOutputStyle(runSettings);
     const output = first
-        ? `<div class="poster-frame-output"><div class="image-wrap" data-image-index="0">${singleMediaHtml(first, 330, 150)}${imageResolutionBadgeHtml(first)}</div></div>`
-        : `<div class="poster-frame-output empty">${running ? '生成中...' : '生成结果会显示在这里'}</div>`;
+        ? `<div class="poster-frame-output" style="${aspectStyle}"><div class="image-wrap" data-image-index="0">${singleMediaHtml(first, 330, 150)}${imageResolutionBadgeHtml(first)}</div></div>`
+        : `<div class="poster-frame-output empty" style="${aspectStyle}">${running ? '生成中...' : '生成结果会显示在这里'}</div>`;
     const meta = node.lastError
         ? `<div class="poster-frame-error">${escapeHtml(node.lastError)}</div>`
         : `<div class="poster-frame-meta">${escapeHtml(posterFrameRunSizeLabel(runSettings))}</div>`;

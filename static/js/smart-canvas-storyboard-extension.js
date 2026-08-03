@@ -233,6 +233,8 @@ function smartResolvePlainMentionImages(prompt=''){
 function createScriptStoryboardNode(x, y, options={}){
     if(!options.skipUndo) pushUndo();
     const providerId = resolveChatProviderId();
+    const model = resolveChatModel('', providerId);
+    const executionContext = storyboardChatExecutionContext({llmProvider:providerId, llmModel:model});
     const node = {
         id:uid('s2s'),
         type:'script-storyboard',
@@ -244,7 +246,11 @@ function createScriptStoryboardNode(x, y, options={}){
         storyboardMode:'segment',
         scriptText:'',
         llmProvider:providerId,
-        llmModel:resolveChatModel('', providerId),
+        llmModel:model,
+        executionContext,
+        llmProviderName:executionContext.providerName,
+        llmConfigId:executionContext.configId,
+        llmConfigName:executionContext.configName,
         storyboardPrompt:window.ScriptToStoryboard?.promptForMode?.('segment') || window.ScriptToStoryboard?.DEFAULT_PROMPT || '',
         shots:[],
         running:false,
@@ -335,8 +341,13 @@ function smartStoryboardInputBodyHtml(node){
         if(typeof scheduleSave === 'function') scheduleSave();
     }
     node.storyboardPrompt = node.storyboardPrompt || segmentPrompt;
-    node.llmProvider = resolveChatProviderId(node.llmProvider || '');
-    node.llmModel = resolveChatModel(node.llmModel || '', node.llmProvider);
+    const storedProvider = String(node.llmProvider || '').trim();
+    const storedModel = String(node.llmModel || '').trim();
+    node.llmProvider = storedProvider || resolveChatProviderId('');
+    node.llmModel = storedModel || (storedProvider
+        ? ((typeof providerChatModels === 'function' ? providerChatModels(storedProvider) : [])[0] || '')
+        : resolveChatModel('', node.llmProvider));
+    const executionContext = storyboardChatExecutionContext(node);
     const continuity = node.continuityReport || {};
     const assets = Array.isArray(node.referenceAssets) ? node.referenceAssets : [];
     return `<div class="script-storyboard-body">
@@ -346,14 +357,15 @@ function smartStoryboardInputBodyHtml(node){
         <label class="storyboard-label">完整长剧本或详细分镜输入</label>
         <textarea class="storyboard-control storyboard-script" placeholder="粘贴完整内容，系统会按剧情连续切成10—15秒故事板，不会拆成3秒镜头卡...">${escapeHtml(node.scriptText || '')}</textarea>
         <div class="storyboard-model-row">
-            <select class="storyboard-control storyboard-provider">${chatProviderOptions(node.llmProvider)}</select>
-            <select class="storyboard-control storyboard-model">${chatModelOptions(node.llmModel, node.llmProvider)}</select>
+            <select class="storyboard-control storyboard-provider">${storyboardChatProviderOptions(node.llmProvider)}</select>
+            <select class="storyboard-control storyboard-model">${storyboardChatModelOptions(node.llmModel, node.llmProvider)}</select>
         </div>
+        <div class="storyboard-execution-context">后续AI处理继承：${escapeHtml(storyboardChatExecutionLabel(executionContext))}</div>
         <div class="storyboard-prompt-head"><span>内设提示词</span><button class="storyboard-control storyboard-reset" type="button">恢复默认</button></div>
         <textarea class="storyboard-control storyboard-prompt">${escapeHtml(node.storyboardPrompt)}</textarea>
         ${continuity.summary ? `<div class="storyboard-summary"><b>连续性检查</b><span>${escapeHtml(continuity.summary)}</span></div>` : ''}
         ${assets.length ? `<div class="storyboard-summary"><b>参考资产</b><span>${escapeHtml(assets.slice(0, 8).map(item => item.name || item).join('、'))}${assets.length > 8 ? ` 等 ${assets.length} 项` : ''}</span></div>` : ''}
-        ${node.lastAiError ? `<div class="storyboard-warn">AI 调用失败，已使用本地拆分：${escapeHtml(node.lastAiError.slice(0, 80))}</div>` : ''}
+        ${node.lastAiError ? `<div class="storyboard-warn">AI调用未完成：${escapeHtml(node.lastAiError.slice(0, 180))}</div>` : ''}
         <button class="storyboard-control storyboard-run ${node.running ? 'running' : ''}" type="button" ${node.running ? 'disabled' : ''}><i data-lucide="sparkles"></i><span>${node.running ? '生成中...' : '生成10—15秒故事板'}</span></button>
     </div>`;
 }
@@ -368,7 +380,7 @@ function smartStoryboardGroupBodyHtml(node){
 
 function smartStoryboardFramePrompt(node, frameIndex){
     const frame = node?.shot?.frames?.[frameIndex] || {};
-    const prompt = window.ScriptToStoryboard?.buildFramePrompt ? window.ScriptToStoryboard.buildFramePrompt(node.shot || {}, frame, frameIndex) : (frame.prompt || frame.description || '');
+    const prompt = String(frame.prompt || '').trim() || (window.ScriptToStoryboard?.buildFramePrompt ? window.ScriptToStoryboard.buildFramePrompt(node.shot || {}, frame, frameIndex) : (frame.description || ''));
     return appendStoryboardImagePromptGuard(prompt, node?.shot || {}, 1);
 }
 
@@ -474,7 +486,7 @@ function shotAssetSceneLooksLikePhysicalLocation(value){
 }
 
 function shotAssetPropHint(value){
-    return /道具|手机|电话|鸡蛋|泡面|方便面|碗|现金|钞票|钱币|外卖袋|配送袋|手提袋|钥匙|文件|照片|水杯|门票|花束|迎宾牌|戒指|行李箱|雨伞|书本|笔记本/.test(String(value || ''));
+    return /道具|手机|电话|鸡蛋|泡面|方便面|碗|现金|钞票|钱币|外卖袋|配送袋|手提袋|钥匙|文件|照片|水杯|门票|花束|迎宾牌|戒指|行李箱|雨伞|书本|笔记本|精华油|平衡霜|精粉|面霜|乳液|喷雾|护肤|产品|包装|精华|套组|瓶子|瓶装|盒装/.test(String(value || ''));
 }
 
 function shotAssetSceneFallback(shot){
@@ -517,13 +529,29 @@ function shotAssetSceneAnalysisSignature(collector){
 }
 
 function smartStoryboardAssetFields(shot){
-    const text = smartStoryboardAssetText(shot);
-    const people = shotAssetCharacterNamesForCard({shot}).slice(0, 6);
-    const timeState = (text.match(/三年前|三年后|现在|当下|过去|回忆|傍晚|夜晚|清晨|白天|深夜|雨天|婚礼当天/) || [''])[0];
-    const scene = (text.match(/室内会面空间|婚礼现场|婚纱店|酒店|餐厅|小区|走廊|电梯|办公室|车内|街道|夜路|房间|门口|城市空间|室内|室外/) || [''])[0];
-    // 服装、手提袋、虚化工作人员等属于画面提示词，不自动变成资产需求；需要时可在人物行里手动绑定并选择用途。
-    const wardrobe = '';
-    const props = shotAssetPropNamesForCard({shot});
+    // Legacy asset matching only consumes explicit structured fields. Story text is
+    // intentionally not parsed locally; the collector's AI analysis owns classification.
+    const list = value => Array.isArray(value)
+        ? value.flatMap(item => list(item))
+        : String(value || '').trim() ? [String(value).trim()] : [];
+    const references = Array.isArray(shot?.referenceAssets) ? shot.referenceAssets : [];
+    const referenceNames = pattern => references
+        .filter(item => item && typeof item === 'object' && pattern.test(String(item.type || item.category || '')))
+        .map(item => String(item.name || item.label || '').trim())
+        .filter(Boolean);
+    const profiles = Array.isArray(shot?.characterProfiles)
+        ? shot.characterProfiles
+        : (Array.isArray(shot?.characterDetails) ? shot.characterDetails : []);
+    const people = [
+        ...profiles.map(item => item && typeof item === 'object' ? (item.name || item.label || item.identity) : item),
+        ...referenceNames(/character|人物|角色/i)
+    ].flatMap(list).filter((value, index, values) => values.indexOf(value) === index).slice(0, 6);
+    const visual = shot?.visualExtract && typeof shot.visualExtract === 'object' ? shot.visualExtract : {};
+    const timeState = list(shot?.timeState || shot?.period || shot?.timePeriod || visual.timeState || visual.period)[0] || '';
+    const scene = list(shot?.scene || shot?.location || shot?.setting || shot?.sceneName || visual.scene || visual.location || visual.setting)[0] || '';
+    const wardrobe = list(shot?.wardrobe || shot?.costume || shot?.outfit)[0] || '';
+    const props = [...list(shot?.props || shot?.objects || shot?.keyProps), ...referenceNames(/prop|道具|object/i)]
+        .filter((value, index, values) => values.indexOf(value) === index);
     return {
         main:people[0] || '',
         second:people[1] || '',
@@ -771,128 +799,44 @@ function shotAssetCardLabel(card){
     return card?.shot?.shotNumber || card?.title || '镜头';
 }
 
-function shotAssetCleanCharacterName(value){
-    return String(value || '')
-        .replace(/[（(][^）)]*[）)]/g, '')
-        .replace(/^(?:主要人物|主体人物|人物|角色)[：:\s]*/g, '')
-        .replace(/(?:是一名|是一个|位于|站在|坐在|穿着).*$/g, '')
-        .replace(/(?:声音|看着|低头|抬头|哭着|苦笑|哽咽|发抖|咬着|嘴硬|笑|哭|喊|说|转身|走向|离开|提示|补一句|起).*$/g, '')
-        .trim();
-}
-
-function shotAssetLooksLikeNamedCharacter(value){
-    const name = shotAssetCleanCharacterName(value);
-    if(!name || name.length > 12) return false;
-    if(shotAssetPropHint(name)) return false;
-    if(shotAssetSceneCanonicalName(name) || /地面|地板|桌面|窗户|风扇|生活空间|生活环境|坐姿|墙面|门框/.test(name)) return false;
-    if(/^(?:他|她|他们|她们|有人|众人|人群|路人|工作人员|服务员|店员|宾客|同事|保安|司机|医生|护士|群众|无|未知|-)$/.test(name)) return false;
-    if(/旁白|文字|字幕|手机|导航|订单|平台|提示音|画面|镜头|场景|酒店|大厅|入口|门口|宴会厅|电梯|走廊|通道|房间|街道|婚礼|彩排|迎宾|指示牌|标牌|牌子|外卖|手提袋|袋|箱|手机|婚纱|服装|衣服|裙|西装|车辆|汽车|电动车|花束|道具|三年前|三年后|回忆|现在/.test(name)) return false;
-    return true;
-}
-
-function shotAssetCharacterNamesForCard(card){
-    const shot = card?.shot || {};
-    const names = [];
-    const add = value => {
-        const name = shotAssetCleanCharacterName(value);
-        if(!shotAssetLooksLikeNamedCharacter(name)) return;
-        if(!names.includes(name)) names.push(name);
-    };
-    const subjectValues = String(shot.subjects || '')
-        .split(/[、，,\/|｜;；\n]+/)
-        .map(value => value.trim())
-        .filter(Boolean);
-    subjectValues.forEach(add);
-    const visibleSubjectKeys = new Set(names.map(smartMentionKey));
-    (Array.isArray(shot.referenceAssets) ? shot.referenceAssets : []).forEach(item => {
-        if(!item || typeof item !== 'object' || !/character|人物|角色/i.test(String(item.type || ''))) return;
-        const name = shotAssetCleanCharacterName(item.name);
-        if(!shotAssetLooksLikeNamedCharacter(name)) return;
-        // AI有时会把迎宾牌上的姓名也列为人物资产；只有主体栏实际出现的人才进入收集器。
-        if(visibleSubjectKeys.size && !visibleSubjectKeys.has(smartMentionKey(name))) return;
-        add(name);
+function shotAssetUniqueTextValues(values){
+    const result = [];
+    const keys = new Set();
+    (values || []).forEach(value => {
+        const text = String(value || '').replace(/\s+/g, ' ').trim();
+        if(!text) return;
+        const key = smartAssetTextKey(text);
+        if(!key || keys.has(key)) return;
+        keys.add(key);
+        result.push(text);
     });
-    const sourceText = String(shot.sourceText || '');
-    for(const match of sourceText.matchAll(/(?:^|\n)\s*([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9·]{0,11})\s*[:：]\s*(?=[“"'])/g)) add(match[1]);
-    return names;
+    return result;
 }
 
-function shotAssetPropNamesForCard(card){
-    const shot = card?.shot || {};
-    const text = smartStoryboardAssetText(shot);
-    const rules = [
-        ['手机', /手机|电话/],
-        ['鸡蛋', /鸡蛋/],
-        ['泡面碗', /泡面碗|方便面碗/],
-        ['泡面', /泡面|方便面/],
-        ['钱', /现金|钞票|钱币|拿出钱|掏钱|递钱|一叠钱/],
-        ['外卖袋', /外卖袋|配送袋|外卖手提袋/],
-        ['钥匙', /钥匙/],
-        ['文件', /文件|资料/],
-        ['照片', /照片|相片/],
-        ['水杯', /水杯|杯子/],
-        ['门票', /门票|票据/],
-        ['花束', /花束|鲜花/],
-        ['迎宾牌', /迎宾牌|欢迎牌/],
-        ['戒指', /戒指/],
-        ['行李箱', /行李箱/],
-        ['雨伞', /雨伞|伞/]
-    ];
-    const names = rules.filter(([, pattern]) => pattern.test(text)).map(([name]) => name);
-    (Array.isArray(shot.referenceAssets) ? shot.referenceAssets : []).forEach(item => {
-        if(!item || typeof item !== 'object' || !/prop|道具|object/i.test(String(item.type || item.category || ''))) return;
-        const name = String(item.name || item.label || '').trim();
-        if(name && shotAssetPropHint(name) && !names.includes(name)) names.push(name);
-    });
-    return [...new Set(names)];
+function shotAssetStableFactEquivalent(left, right){
+    const a = smartAssetTextKey(left);
+    const b = smartAssetTextKey(right);
+    return Boolean(a && b && (a === b || a.includes(b) || b.includes(a)));
+}
+
+function shotAssetCharacterVariantGroups(collector, baseLabel){
+    if(!collector || !baseLabel) return [];
+    return shotAssetCollectorDemands(collector)
+        .filter(demand => demand.type === 'character' && smartMentionKey(shotAssetDemandBaseLabel(demand)) === smartMentionKey(baseLabel))
+        .map((demand, index) => ({
+            index,
+            profiles:Array.isArray(demand.profiles) ? demand.profiles : [],
+            signature:demand.variantSignature || JSON.stringify(demand.profiles || []),
+            demand
+        }));
 }
 
 function shotAssetDemandItemsForCard(card, collector=null){
-    if(!card?.id) return [];
+    if(!card?.id || !collector) return [];
     const shotLabel = shotAssetCardLabel(card);
-    const characters = shotAssetCharacterNamesForCard(card);
-    const props = shotAssetPropNamesForCard(card);
-    const fields = smartStoryboardAssetFields(card.shot || {});
-    const sceneInfo = shotAssetSceneForCard(collector, card);
-    const items = [];
-    if(!characters.length){
-        items.push({
-            key:shotAssetDemandKey('character', `${card.id}:pending`),
-            type:'character',
-            label:'人物待指定',
-            cardId:card.id,
-            shotLabel
-        });
-    } else {
-        characters.forEach(name => items.push({
-            key:shotAssetDemandKey('character', name),
-            type:'character',
-            label:name,
-            cardId:card.id,
-            shotLabel
-        }));
-    }
-    if(sceneInfo.label){
-        items.push({
-            key:shotAssetDemandKey('scene', sceneInfo.sceneId || sceneInfo.label),
-            type:'scene',
-            label:sceneInfo.label,
-            sceneId:sceneInfo.sceneId,
-            sceneAliases:sceneInfo.aliases || [],
-            sceneSource:sceneInfo.source || 'local',
-            sceneConfidence:sceneInfo.confidence || 0,
-            cardId:card.id,
-            shotLabel
-        });
-    }
-    props.forEach(name => items.push({
-        key:shotAssetDemandKey('prop', name),
-        type:'prop',
-        label:name,
-        cardId:card.id,
-        shotLabel
-    }));
-    return items;
+    return shotAssetCollectorDemands(collector)
+        .filter(demand => Array.isArray(demand.cardIds) && demand.cardIds.includes(card.id))
+        .map(demand => ({...demand, cardId:card.id, shotLabel}));
 }
 
 function storyboardCardsFromNode(node){
@@ -939,22 +883,750 @@ function shotAssetCollectorCards(collector){
         });
 }
 
-function shotAssetCollectorDemands(collector){
-    const map = new Map();
-    shotAssetCollectorCards(collector).forEach(card => {
-        shotAssetDemandItemsForCard(card, collector).forEach(item => {
-            const prev = map.get(item.key) || {...item, cardIds:[], shotLabels:[]};
-            if(!prev.cardIds.includes(card.id)) prev.cardIds.push(card.id);
-            if(!prev.shotLabels.includes(item.shotLabel)) prev.shotLabels.push(item.shotLabel);
-            map.set(item.key, prev);
+const SHOT_ASSET_ANALYSIS_VERSION = '20260803-ai-only-v2';
+const SHOT_ASSET_ANALYSIS_BATCH_MAX_CHARS = 12000;
+const SHOT_ASSET_ANALYSIS_SOURCE_MAX_CHARS = 2400;
+const shotAssetLiveAnalysisIds = new Set();
+
+function shotAssetAnalysisTextList(value){
+    if(Array.isArray(value)) return value.flatMap(item => shotAssetAnalysisTextList(item));
+    if(value && typeof value === 'object') return Object.values(value).flatMap(item => shotAssetAnalysisTextList(item));
+    const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+    return text ? [text] : [];
+}
+
+function shotAssetAnalysisUnique(values){
+    const result = [];
+    const seen = new Set();
+    shotAssetAnalysisTextList(values).forEach(value => {
+        const key = smartAssetTextKey(value);
+        if(!key || seen.has(key)) return;
+        seen.add(key);
+        result.push(value);
+    });
+    return result;
+}
+
+function shotAssetAnalysisCompactText(value, max=360){
+    const cleaned = String(value ?? '').replace(/\s+/g, ' ').trim();
+    return cleaned.length > max ? `${cleaned.slice(0, max)}…` : cleaned;
+}
+
+function shotAssetAnalysisCompactProfile(profile){
+    const item = profile && typeof profile === 'object' ? profile : {};
+    return {
+        name:shotAssetAnalysisCompactText(item.name || item.label || item.identity, 180),
+        ageGender:shotAssetAnalysisCompactText(item.ageGender || item.age || item.gender, 180),
+        role:shotAssetAnalysisCompactText(item.role || item.occupation || item.profession, 240),
+        appearance:shotAssetAnalysisCompactText(item.appearance || item.body || item.bodyType, 240),
+        hair:shotAssetAnalysisCompactText(item.hair || item.hairstyle, 180),
+        wardrobe:shotAssetAnalysisCompactText(item.wardrobe || item.clothing || item.costume, 240),
+        demeanor:shotAssetAnalysisCompactText(item.demeanor || item.stableDemeanor || item.temperament, 180),
+        period:shotAssetAnalysisCompactText(item.period || item.era || item.timePeriod, 180)
+    };
+}
+
+function shotAssetCollectorAnalysisCards(collector){
+    const visualKeys = ['start', 'middle', 'end', 'foreground', 'middleground', 'background', 'leftRight', 'focusRelation', 'eyeDirection', 'lightingComposition'];
+    return shotAssetCollectorCards(collector).map(card => {
+        const shot = card?.shot || {};
+        const visual = shot.visualExtract && typeof shot.visualExtract === 'object' ? shot.visualExtract : {};
+        return {
+            id:card.id,
+            shotNumber:shotAssetAnalysisCompactText(shot.shotNumber || shotAssetCardLabel(card), 120),
+            timeRange:shotAssetAnalysisCompactText(shot.timeRange, 80),
+            purpose:shotAssetAnalysisCompactText(shot.purpose, 360),
+            subjects:shotAssetAnalysisCompactText(shot.subjects, 900),
+            scene:shotAssetAnalysisCompactText(shot.scene || shot.location || shot.setting || visual.background, 700),
+            props:(Array.isArray(shot.props) ? shot.props : (Array.isArray(shot.objects) ? shot.objects : []))
+                .map(item => shotAssetAnalysisCompactText(item?.name || item?.label || item, 180)).filter(Boolean).slice(0, 12),
+            characterProfiles:(Array.isArray(shot.characterProfiles) ? shot.characterProfiles : []).map(shotAssetAnalysisCompactProfile).filter(item => item.name || item.role || item.ageGender),
+            sourceText:shotAssetAnalysisCompactText(shot.sourceText, SHOT_ASSET_ANALYSIS_SOURCE_MAX_CHARS),
+            visualExtract:Object.fromEntries(visualKeys.map(key => [key, shotAssetAnalysisCompactText(visual[key], 360)]).filter(([, value]) => value)),
+            referenceAssets:(Array.isArray(shot.referenceAssets) ? shot.referenceAssets : []).map(item => ({
+                name:shotAssetAnalysisCompactText(item?.name || item?.label, 180),
+                type:shotAssetAnalysisCompactText(item?.type || item?.category, 100),
+                purpose:shotAssetAnalysisCompactText(item?.purpose || item?.role, 180)
+            })).filter(item => item.name || item.type || item.purpose).slice(0, 12)
+        };
+    });
+}
+
+function shotAssetAnalysisHash(value){
+    const source = JSON.stringify(value);
+    let hash = 2166136261;
+    for(let index = 0; index < source.length; index += 1){
+        hash ^= source.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function shotAssetCollectorAnalysisSignature(collector){
+    return `${SHOT_ASSET_ANALYSIS_VERSION}:${shotAssetAnalysisHash(shotAssetCollectorAnalysisCards(collector))}`;
+}
+
+function shotAssetCollectorAnalysisState(collector){
+    const cards = shotAssetCollectorAnalysisCards(collector);
+    const signature = shotAssetCollectorAnalysisSignature(collector);
+    const analysis = collector?.assetAnalysis && typeof collector.assetAnalysis === 'object' ? collector.assetAnalysis : null;
+    const live = Boolean(collector?.id && shotAssetLiveAnalysisIds.has(collector.id));
+    if(!live && collector?.assetAnalysisRunning){
+        delete collector.assetAnalysisRunning;
+        delete collector.assetAnalysisStartedAt;
+    }
+    let status = String(live ? 'running' : (collector?.assetAnalysisStatus || analysis?.status || 'idle')).trim() || 'idle';
+    if(!live && status === 'running'){
+        status = analysis?.status && analysis.status !== 'running' ? String(analysis.status) : 'idle';
+        collector.assetAnalysisStatus = status;
+    }
+    if(live && Number(collector?.assetAnalysisStartedAt) && Date.now() - Number(collector.assetAnalysisStartedAt) > 5 * 60 * 1000){
+        status = 'idle';
+        delete collector.assetAnalysisRunning;
+        shotAssetLiveAnalysisIds.delete(collector.id);
+        collector.assetAnalysisStatus = 'idle';
+    }
+    const sameSignature = Boolean(analysis && String(analysis.signature || '') === signature);
+    return {
+        cards,
+        signature,
+        analysis,
+        status,
+        stale:!cards.length || status !== 'ready' || !sameSignature,
+        error:String(analysis?.error || collector?.assetAnalysisError || '').trim()
+    };
+}
+
+function shotAssetAnalysisSystemPrompt(){
+    return `你是故事板资产分类器，只负责把故事板卡片中的资产需求分类，不写生图提示词，不做文字润色。
+
+严格输出 JSON：
+{
+  "characters": [{
+    "name": "真实人物身份或人物名称",
+    "baseName": "同一人物的统一名称",
+    "variantKey": "造型、年龄阶段或剧情时期不同才填写，否则为空",
+    "cardIds": ["输入中的卡片id"],
+    "ageGender": "年龄和性别",
+    "role": "职业或剧情身份",
+    "appearance": "外貌体型",
+    "hair": "发型",
+    "wardrobe": "服装",
+    "demeanor": "稳定气质",
+    "period": "剧情年代或时期",
+    "profiles": [{"cardId":"卡片id","ageGender":"","role":"","appearance":"","hair":"","wardrobe":"","demeanor":"","period":""}]
+  }],
+  "scenes": [{"name":"真实物理场景名称","cardIds":["卡片id"],"aliases":[]}],
+  "props": [{"name":"真实物件或产品名称","cardIds":["卡片id"]}],
+  "visualElements": [{"label":"图示、线稿、图标或信息图元素","cardIds":["卡片id"],"reason":"为什么不是人物/场景/道具"}],
+  "ignored": [{"text":"被忽略的内容","reason":"台词、运镜、临时动作或其他原因"}]
+}
+
+分类规则：
+1. characters 只能写真实人物身份或人物名称。服装、发型、外貌、气质、动作、表情、台词、旁白、运镜、场景和图示绝对不能进入 characters。
+2. sourceText 中的口播台词、旁白台词、人物台词和视频提示词只能作为上下文，不能从“冒号+引号”推断人物。
+3. “口播主讲人”可以作为职业身份；具体口播内容不能进入人物名称或人物资产信息。
+4. 女性身体轮廓、舒展线条、保湿层图示、图标、线稿、信息图、产品展示元素放入 visualElements，不得放入 characters。
+5. 同一人物跨卡片必须合并；服装、年龄阶段或剧情时期明显冲突时使用不同 variantKey。
+6. 每个 cardIds 只能使用输入中存在的卡片 id；不确定的内容放入 ignored，不要猜测。
+7. 只输出 JSON，不要 Markdown，不要解释。`;
+}
+
+function shotAssetAnalysisBatches(rows, maxChars=SHOT_ASSET_ANALYSIS_BATCH_MAX_CHARS){
+    const batches = [];
+    let current = [];
+    let currentChars = 2;
+    (Array.isArray(rows) ? rows : []).forEach(row => {
+        const rowChars = JSON.stringify(row).length + 1;
+        if(current.length && currentChars + rowChars > maxChars){
+            batches.push(current);
+            current = [];
+            currentChars = 2;
+        }
+        current.push(row);
+        currentChars += rowChars;
+    });
+    if(current.length) batches.push(current);
+    return batches;
+}
+
+function mergeShotAssetAnalysisPayloads(payloads){
+    const merged = {characters:[], scenes:[], props:[], visualElements:[], ignored:[]};
+    (Array.isArray(payloads) ? payloads : []).forEach(payload => {
+        const raw = payload && typeof payload === 'object' ? (payload.assetManifest || payload.assetAnalysis || payload) : {};
+        ['characters', 'scenes', 'props', 'visualElements', 'ignored'].forEach(key => {
+            if(Array.isArray(raw?.[key])) merged[key].push(...raw[key]);
         });
     });
-    return [...map.values()].sort((a, b) => {
-        const order = {character:1, scene:2, wardrobe:3, prop:4, other:5};
+    return merged;
+}
+
+function normalizeShotAssetAnalysisPayloadShape(payload, fallbackCardIds=[]){
+    const raw = payload && typeof payload === 'object' ? (payload.assetManifest || payload.assetAnalysis || payload) : {};
+    const fallback = [...new Set((Array.isArray(fallbackCardIds) ? fallbackCardIds : []).map(value => String(value || '').trim()).filter(Boolean))];
+    const normalizeAssetItems = (items, nameKey='name') => (Array.isArray(items) ? items : []).map(item => {
+        const normalized = item && typeof item === 'object' ? {...item} : {[nameKey]:String(item || '').trim()};
+        if(!shotAssetManifestReferenceValues(normalized).length && fallback.length) normalized.cardIds = fallback.slice();
+        return normalized;
+    }).filter(item => String(item?.name || item?.label || '').trim());
+    return {
+        characters:normalizeAssetItems(raw.characters),
+        scenes:normalizeAssetItems(raw.scenes),
+        props:normalizeAssetItems(raw.props),
+        visualElements:normalizeAssetItems(raw.visualElements, 'label'),
+        ignored:(Array.isArray(raw.ignored) ? raw.ignored : []).map(item => item && typeof item === 'object' ? item : {text:String(item || '').trim(), reason:'AI标记为非资产'}).filter(item => String(item?.text || '').trim())
+    };
+}
+
+function shotAssetAnalysisCardIds(item, validCardIds){
+    const raw = Array.isArray(item?.cardIds) ? item.cardIds : [item?.cardId];
+    return [...new Set(raw.map(value => String(value || '').trim()).filter(value => validCardIds.has(value)))];
+}
+
+function shotAssetManifestFromPayload(payload, shots=[]){
+    const raw = payload && typeof payload === 'object'
+        ? (payload.assetManifest || payload.assetAnalysis || null)
+        : null;
+    if(raw && typeof raw === 'object') return raw;
+    const characters = [];
+    (shots || []).forEach(shot => {
+        const profiles = Array.isArray(shot?.characterProfiles) ? shot.characterProfiles : [];
+        profiles.forEach(profile => {
+            const name = String(profile?.name || profile?.label || profile?.identity || '').trim();
+            if(!name) return;
+            const stable = {
+                ageGender:profile?.ageGender || profile?.age || profile?.gender || '',
+                role:profile?.occupation || profile?.role || profile?.profession || '',
+                appearance:profile?.appearance || profile?.body || profile?.bodyType || '',
+                hair:profile?.hair || profile?.hairstyle || '',
+                wardrobe:profile?.wardrobe || profile?.clothing || profile?.costume || '',
+                demeanor:profile?.demeanor || profile?.stableDemeanor || profile?.temperament || '',
+                period:profile?.period || profile?.era || profile?.timePeriod || ''
+            };
+            characters.push({
+                name,
+                baseName:String(profile?.baseName || name).trim(),
+                variantKey:String(profile?.variantKey || '').trim(),
+                shotNumbers:[String(shot?.shotNumber || '').trim()].filter(Boolean),
+                ...stable,
+                profiles:[{shotNumber:String(shot?.shotNumber || '').trim(), ...stable}]
+            });
+        });
+    });
+    if(!characters.length) return null;
+    return {characters, scenes:[], props:[], visualElements:[], ignored:[]};
+}
+
+function shotAssetManifestReferenceValues(item){
+    return [
+        item?.cardIds,
+        item?.cardId,
+        item?.shotNumbers,
+        item?.shotNumber,
+        item?.shotLabels,
+        item?.shotLabel,
+        item?.shotIds,
+        item?.shotId
+    ].flatMap(value => Array.isArray(value) ? value : [value])
+        .map(value => String(value || '').trim())
+        .filter(Boolean);
+}
+
+function bindShotAssetManifestToCards(manifest, cards){
+    const raw = manifest && typeof manifest === 'object' ? manifest : {};
+    const validCardIds = new Set((cards || []).map(card => card.id));
+    const lookup = new Map();
+    const addLookup = (value, cardId) => {
+        const key = smartAssetTextKey(value);
+        if(key && !lookup.has(key)) lookup.set(key, cardId);
+    };
+    (cards || []).forEach(card => {
+        addLookup(card.id, card.id);
+        addLookup(card.shot?.shotNumber, card.id);
+        addLookup(shotAssetCardLabel(card), card.id);
+        addLookup(card.shot?.timeRange, card.id);
+    });
+    const resolveCardIds = item => [...new Set(shotAssetManifestReferenceValues(item).flatMap(value => {
+        if(validCardIds.has(value)) return [value];
+        const exact = lookup.get(smartAssetTextKey(value));
+        return exact ? [exact] : [];
+    }))];
+    const mapItem = item => {
+        const next = item && typeof item === 'object' ? {...item} : {};
+        next.cardIds = resolveCardIds(item);
+        if(Array.isArray(item?.profiles)){
+            next.profiles = item.profiles.map(profile => {
+                const profileCardIds = resolveCardIds(profile);
+                return {
+                    ...profile,
+                    ...(profileCardIds[0] ? {cardId:profileCardIds[0]} : {})
+                };
+            }).filter(profile => profile.cardId);
+        }
+        return next;
+    };
+    return {
+        ...raw,
+        characters:Array.isArray(raw.characters) ? raw.characters.map(mapItem) : [],
+        scenes:Array.isArray(raw.scenes) ? raw.scenes.map(mapItem) : [],
+        props:Array.isArray(raw.props) ? raw.props.map(mapItem) : [],
+        visualElements:Array.isArray(raw.visualElements) ? raw.visualElements.map(mapItem) : [],
+        ignored:Array.isArray(raw.ignored) ? raw.ignored : []
+    };
+}
+
+function shotAssetAnalysisProfile(item, cardId){
+    const profiles = Array.isArray(item?.profiles) ? item.profiles : [];
+    const profile = profiles.find(candidate => String(candidate?.cardId || '').trim() === cardId) || item || {};
+    return {
+        cardId,
+        ageGender:shotAssetAnalysisUnique(profile.ageGender || profile.age || profile.gender),
+        role:shotAssetAnalysisUnique(profile.role || profile.occupation || profile.profession),
+        appearance:shotAssetAnalysisUnique(profile.appearance || profile.body || profile.bodyType),
+        hair:shotAssetAnalysisUnique(profile.hair || profile.hairstyle),
+        wardrobe:shotAssetAnalysisUnique(profile.wardrobe || profile.clothing || profile.costume),
+        demeanor:shotAssetAnalysisUnique(profile.demeanor || profile.stableDemeanor || profile.temperament),
+        period:shotAssetAnalysisUnique(profile.period || profile.era || profile.timePeriod)
+    };
+}
+
+function normalizeShotAssetAiAnalysis(payload, collector, cards, signature){
+    const raw = payload && typeof payload === 'object' ? payload : {};
+    const validCardIds = new Set(cards.map(card => card.id));
+    const characters = Array.isArray(raw.characters) ? raw.characters : [];
+    const characterGroups = new Map();
+    characters.forEach(item => {
+        const baseName = String(item?.baseName || item?.canonicalName || item?.identity || item?.name || '').trim();
+        const name = String(item?.name || baseName).trim();
+        const cardIds = shotAssetAnalysisCardIds(item, validCardIds);
+        if(!baseName || !name || !cardIds.length) return;
+        const variantKey = String(item?.variantKey || item?.variantName || item?.versionKey || '').trim();
+        const groupKey = `${smartMentionKey(baseName)}|${smartMentionKey(variantKey || 'default')}`;
+        const group = characterGroups.get(groupKey) || {
+            type:'character',
+            key:groupKey,
+            baseLabel:baseName,
+            variantKey,
+            cardIds:[],
+            profiles:[],
+            identityFacts:[]
+        };
+        cardIds.forEach(cardId => {
+            if(!group.cardIds.includes(cardId)) group.cardIds.push(cardId);
+            const profile = shotAssetAnalysisProfile(item, cardId);
+            const existing = group.profiles.find(candidate => candidate.cardId === cardId);
+            if(existing){
+                Object.keys(profile).filter(key => key !== 'cardId').forEach(field => {
+                    existing[field] = shotAssetAnalysisUnique([...(existing[field] || []), ...(profile[field] || [])]);
+                });
+            } else group.profiles.push(profile);
+        });
+        group.identityFacts = shotAssetAnalysisUnique([...(group.identityFacts || []), name, baseName]);
+        characterGroups.set(groupKey, group);
+    });
+    const characterBaseCounts = new Map();
+    [...characterGroups.values()].forEach(group => {
+        const key = smartMentionKey(group.baseLabel);
+        characterBaseCounts.set(key, (characterBaseCounts.get(key) || 0) + 1);
+    });
+    const characterDemands = [...characterGroups.values()].map((group, index, groups) => {
+        const sameBase = groups.filter(candidate => smartMentionKey(candidate.baseLabel) === smartMentionKey(group.baseLabel));
+        const variantIndex = sameBase.indexOf(group);
+        const variantCount = characterBaseCounts.get(smartMentionKey(group.baseLabel)) || 1;
+        const label = variantCount > 1 ? `${group.baseLabel} · 造型版本${variantIndex + 1}` : group.baseLabel;
+        return {
+            key:shotAssetDemandKey('character', variantCount > 1 ? `${group.baseLabel}::造型版本${variantIndex + 1}` : group.baseLabel),
+            type:'character',
+            label,
+            baseLabel:group.baseLabel,
+            variantIndex:variantCount > 1 ? variantIndex : 0,
+            variantCount,
+            variantKey:group.variantKey,
+            variantSignature:JSON.stringify(group.profiles),
+            cardIds:group.cardIds,
+            shotLabels:group.cardIds.map(cardId => cards.find(card => card.id === cardId)?.shotNumber || cardId),
+            profiles:group.profiles,
+            identityFacts:group.identityFacts
+        };
+    });
+    const normalizeSimpleDemand = (items, type) => {
+        const groups = new Map();
+        (Array.isArray(items) ? items : []).forEach(item => {
+            const label = String(typeof item === 'string' ? item : (item?.name || item?.label || item?.canonicalName || '')).trim();
+            const cardIds = shotAssetAnalysisCardIds(item, validCardIds);
+            if(!label || !cardIds.length) return;
+            const key = `${type}|${smartMentionKey(label)}`;
+            const group = groups.get(key) || {label, cardIds:[], aliases:[], sceneId:'', source:'ai', confidence:0};
+            cardIds.forEach(cardId => { if(!group.cardIds.includes(cardId)) group.cardIds.push(cardId); });
+            group.aliases = shotAssetAnalysisUnique([...(group.aliases || []), item.aliases || item.alias]);
+            group.sceneId = group.sceneId || String(item.sceneId || '').trim();
+            group.source = String(item.source || 'ai').trim() || 'ai';
+            group.confidence = Math.max(group.confidence, Number(item.confidence) || 0);
+            groups.set(key, group);
+        });
+        return [...groups.values()].map(group => ({
+            key:shotAssetDemandKey(type, group.sceneId || group.label),
+            type,
+            label:group.label,
+            cardIds:group.cardIds,
+            shotLabels:group.cardIds.map(cardId => cards.find(card => card.id === cardId)?.shotNumber || cardId),
+            ...(type === 'scene' ? {sceneId:group.sceneId || group.label, sceneAliases:group.aliases, sceneSource:group.source, sceneConfidence:group.confidence} : {})
+        }));
+    };
+    const scenes = normalizeSimpleDemand(raw.scenes, 'scene');
+    const props = normalizeSimpleDemand(raw.props, 'prop');
+    return {
+        status:'ready',
+        signature,
+        version:SHOT_ASSET_ANALYSIS_VERSION,
+        demands:[...characterDemands, ...scenes, ...props],
+        characters:characterDemands,
+        scenes,
+        props,
+        visualElements:Array.isArray(raw.visualElements) ? raw.visualElements : [],
+        ignored:Array.isArray(raw.ignored) ? raw.ignored : [],
+        generatedAt:Date.now()
+    };
+}
+
+function storyboardChatContextSource(source){
+    if(source?.type !== 'shot-asset-collector' || !Array.isArray(nodes)) return source || {};
+    const card = shotAssetCollectorCards(source)[0];
+    const storyboard = nodes.find(item => item.id === card?.sourceStoryboardId && item.type === 'script-storyboard');
+    if(!storyboard) return source;
+    const merged = {...storyboard, ...source};
+    ['llmProvider', 'llmProviderName', 'llmModel', 'llmConfigId', 'llmConfigName'].forEach(field => {
+        if(!String(source?.[field] || '').trim() && String(storyboard?.[field] || '').trim()) merged[field] = storyboard[field];
+    });
+    const sourceContext = source?.executionContext && typeof source.executionContext === 'object' ? source.executionContext : {};
+    if(!Object.keys(sourceContext).length && storyboard?.executionContext) merged.executionContext = storyboard.executionContext;
+    return merged;
+}
+
+function storyboardChatExecutionContext(source, overrides={}){
+    const contextSource = storyboardChatContextSource(source);
+    const inherited = contextSource?.executionContext || contextSource?.storyboardExecutionContext || {};
+    const analysis = contextSource?.assetAnalysis && typeof contextSource.assetAnalysis === 'object' ? contextSource.assetAnalysis : {};
+    const providerId = String(overrides.providerId != null
+        ? overrides.providerId
+        : (String(contextSource?.llmProvider || '').trim() || inherited.providerId || analysis.provider || '')).trim();
+    const providers = typeof chatApiProviders === 'function' ? chatApiProviders() : [];
+    const provider = providers.find(item => item.id === providerId);
+    const providerName = String(overrides.providerName || contextSource?.llmProviderName || inherited.providerName || provider?.name || providerId || '未配置接口').trim();
+    const model = String(overrides.model != null
+        ? overrides.model
+        : (String(contextSource?.llmModel || '').trim() || inherited.model || analysis.model || '')).trim();
+    const configId = String(overrides.configId || contextSource?.llmConfigId || inherited.configId || providerId || '').trim();
+    const configName = String(overrides.configName || contextSource?.llmConfigName || inherited.configName || providerName || configId || '未命名配置').trim();
+    return {providerId, providerName, model, configId, configName};
+}
+
+function storyboardChatProviderOptions(selectedId=''){
+    const selected = String(selectedId || '').trim();
+    const providers = typeof chatApiProviders === 'function' ? chatApiProviders() : [];
+    const hasSelected = providers.some(provider => provider.id === selected);
+    const unavailable = selected && !hasSelected
+        ? `<option value="${escapeHtml(selected)}" selected>当前配置不可用：${escapeHtml(selected)}</option>`
+        : '';
+    return unavailable + providers.map(provider => `<option value="${escapeHtml(provider.id)}" ${provider.id === selected ? 'selected' : ''}>${escapeHtml(provider.name || provider.id)}</option>`).join('');
+}
+
+function storyboardChatModelOptions(selectedModel='', providerId=''){
+    const selected = String(selectedModel || '').trim();
+    const models = typeof providerChatModels === 'function' ? providerChatModels(providerId) : [];
+    const values = [...new Set([selected, ...models].filter(Boolean))];
+    if(!values.length) return '<option value="" disabled selected>当前接口没有可用模型</option>';
+    return values.map(model => `<option value="${escapeHtml(model)}" ${model === selected ? 'selected' : ''}>${escapeHtml(model)}${selected === model && !models.includes(model) ? '（当前配置不可用）' : ''}</option>`).join('');
+}
+
+function storyboardChatRequestConfig(node){
+    const storedProvider = String(node?.llmProvider || '').trim();
+    const providers = typeof chatApiProviders === 'function' ? chatApiProviders() : [];
+    const provider = storedProvider || resolveChatProviderId('');
+    const matchedProvider = providers.find(item => item.id === provider);
+    if(storedProvider && !matchedProvider){
+        throw new Error(`接口配置“${node?.llmProviderName || storedProvider}”当前不可用，未自动切换接口。`);
+    }
+    const models = typeof providerChatModels === 'function' ? providerChatModels(provider) : [];
+    const storedModel = String(node?.llmModel || '').trim();
+    if(storedModel && models.length && !models.includes(storedModel)){
+        throw new Error(`接口“${matchedProvider?.name || provider}”没有模型“${storedModel}”，未自动切换模型。`);
+    }
+    if(matchedProvider && !models.length){
+        throw new Error(`接口“${matchedProvider.name || provider}”没有可用聊天模型，请检查接口配置。`);
+    }
+    const model = storedModel || models[0] || resolveChatModel('', provider);
+    const executionContext = storyboardChatExecutionContext(node, {providerId:provider, model});
+    return {provider, model, executionContext};
+}
+
+function applyStoryboardChatExecutionContext(target, context){
+    if(!target || !context) return target;
+    target.executionContext = {...context};
+    target.llmProvider = context.providerId;
+    target.llmProviderName = context.providerName;
+    target.llmModel = context.model;
+    target.llmConfigId = context.configId;
+    target.llmConfigName = context.configName;
+    return target;
+}
+
+function storyboardChatExecutionLabel(context){
+    const value = context || {};
+    const provider = String(value.providerName || value.providerId || '未配置接口').trim();
+    const model = String(value.model || '未配置模型').trim();
+    const config = String(value.configName || value.configId || '').trim();
+    return [provider, model, config && config !== provider ? config : ''].filter(Boolean).join(' / ');
+}
+
+function shotAssetAnalysisStatusHtml(collector){
+    const state = shotAssetCollectorAnalysisState(collector);
+    const context = storyboardChatExecutionContext(collector);
+    const sourceLabel = storyboardChatExecutionLabel(context);
+    const progress = collector?.assetAnalysisProgress && typeof collector.assetAnalysisProgress === 'object' ? collector.assetAnalysisProgress : {};
+    const progressLabel = Number(progress.total) > 1 ? ` · 第${Math.max(1, Number(progress.current) || 1)}/${Number(progress.total)}批` : '';
+    if(state.status === 'queued') return `<div class="shot-asset-analysis-status queued">等待AI资产分类 · ${escapeHtml(sourceLabel)}<button class="shot-asset-analysis-retry" type="button">重新分析</button></div>`;
+    if(state.status === 'running') return `<div class="shot-asset-analysis-status running">AI资产分类中${progressLabel} · ${escapeHtml(sourceLabel)}</div>`;
+    if(state.status === 'error' && state.analysis?.status === 'ready' && state.analysis.demands?.length) return `<div class="shot-asset-analysis-status error">本次AI资产分类失败，已保留上次清单 · ${escapeHtml(sourceLabel)}：${escapeHtml(state.error || '未返回可解析结果')}<button class="shot-asset-analysis-retry" type="button">重新分析</button></div>`;
+    if(state.status === 'error') return `<div class="shot-asset-analysis-status error">AI资产分类失败 · ${escapeHtml(sourceLabel)}：${escapeHtml(state.error || '未返回可解析结果')}<button class="shot-asset-analysis-retry" type="button">重新分析</button></div>`;
+    if(state.status === 'ready' && state.stale) return `<div class="shot-asset-analysis-status queued">故事板内容已变化，资产清单已过期 · ${escapeHtml(sourceLabel)}<button class="shot-asset-analysis-retry" type="button">重新分析</button></div>`;
+    if(state.status === 'ready') return `<div class="shot-asset-analysis-status ready">资产分类已随故事板AI完成 · ${escapeHtml(sourceLabel)}<button class="shot-asset-analysis-retry" type="button">重新分析</button></div>`;
+    return `<div class="shot-asset-analysis-status">未取得资产清单 · ${escapeHtml(sourceLabel)}<button class="shot-asset-analysis-retry" type="button">重新分析</button></div>`;
+}
+
+function shotAssetAnalysisMessage(cards, batchIndex=0, batchTotal=1){
+    return JSON.stringify({batch:{index:batchIndex + 1, total:batchTotal}, cards:Array.isArray(cards) ? cards : []});
+}
+
+async function analyzeShotAssetsWithAi(collector, options={}){
+    if(!collector || collector.assetAnalysisRunning) return;
+    const state = shotAssetCollectorAnalysisState(collector);
+    if(!state.cards.length) return;
+    if(!options.force && state.status === 'ready' && !state.stale) return;
+    const previousAnalysis = collector.assetAnalysis?.status === 'ready' && Array.isArray(collector.assetAnalysis?.demands)
+        ? collector.assetAnalysis
+        : null;
+    const batches = shotAssetAnalysisBatches(state.cards);
+    if(!batches.length) return;
+    shotAssetLiveAnalysisIds.add(collector.id);
+    collector.assetAnalysisRunning = true;
+    collector.assetAnalysisStartedAt = Date.now();
+    collector.assetAnalysisStatus = 'running';
+    collector.assetAnalysisProgress = {current:0, total:batches.length};
+    render();
+    try {
+        const ai = promptOptimizationConfigForCollector(collector);
+        const payloads = [];
+        let result = null;
+        for(let index = 0; index < batches.length; index += 1){
+            if(!nodes.some(item => item.id === collector.id)) return;
+            collector.assetAnalysisProgress = {current:index + 1, total:batches.length};
+            render();
+            result = await requestSmartCanvasLlmText(shotAssetAnalysisMessage(batches[index], index, batches.length), {
+                ...ai,
+                systemPrompt:shotAssetAnalysisSystemPrompt()
+            });
+            const payload = window.ScriptToStoryboard?.extractJson?.(result.text);
+            if(!payload) throw new Error(`AI第${index + 1}/${batches.length}批没有返回可解析的资产分类 JSON`);
+            payloads.push(normalizeShotAssetAnalysisPayloadShape(payload, batches[index].map(card => card.id)));
+            scheduleSave();
+        }
+        const mergedPayload = mergeShotAssetAnalysisPayloads(payloads);
+        const boundManifest = bindShotAssetManifestToCards(mergedPayload, state.cards);
+        const manifestItemCount = ['characters', 'scenes', 'props', 'visualElements'].reduce((sum, key) => sum + (Array.isArray(mergedPayload[key]) ? mergedPayload[key].length : 0), 0);
+        const analysis = normalizeShotAssetAiAnalysis(boundManifest, collector, state.cards, state.signature);
+        if(manifestItemCount && !analysis.demands.length) throw new Error('AI返回了资产，但没有对应到当前故事板卡片编号');
+        analysis.provider = result?.provider || ai.provider;
+        analysis.providerName = ai.executionContext?.providerName || storyboardChatExecutionContext(collector).providerName;
+        analysis.model = result?.model || ai.model;
+        analysis.configId = ai.executionContext?.configId || storyboardChatExecutionContext(collector).configId;
+        analysis.configName = ai.executionContext?.configName || storyboardChatExecutionContext(collector).configName;
+        analysis.source = options.automatic ? 'storyboard-ai-asset-analysis' : 'manual-asset-analysis';
+        if(!nodes.some(item => item.id === collector.id)) return;
+        collector.assetManifest = boundManifest;
+        collector.assetAnalysis = analysis;
+        collector.assetAnalysisStatus = 'ready';
+        collector.assetAnalysisProvider = analysis.provider;
+        collector.assetAnalysisProviderName = analysis.providerName;
+        collector.assetAnalysisModel = analysis.model;
+        collector.assetAnalysisConfigId = analysis.configId;
+        collector.assetAnalysisConfigName = analysis.configName;
+        collector.assetAnalysisError = '';
+        delete collector.assetAnalysisProgress;
+        delete collector.assetAnalysisStartedAt;
+        toast(`AI资产分类完成：${analysis.characters.length}个人物、${analysis.scenes.length}个场景、${analysis.props.length}个道具`);
+        scheduleSave();
+    } catch(error){
+        collector.assetAnalysisStatus = 'error';
+        collector.assetAnalysisError = `${storyboardChatExecutionLabel(storyboardChatExecutionContext(collector))}：${String(error?.message || error).slice(0, 180)}`;
+        if(!previousAnalysis){
+            collector.assetAnalysis = {
+                status:'error',
+                signature:state.signature,
+                version:SHOT_ASSET_ANALYSIS_VERSION,
+                demands:[],
+                characters:[],
+                scenes:[],
+                props:[],
+                visualElements:[],
+                ignored:[],
+                error:collector.assetAnalysisError,
+                provider:storyboardChatExecutionContext(collector).providerId,
+                providerName:storyboardChatExecutionContext(collector).providerName,
+                model:storyboardChatExecutionContext(collector).model,
+                configId:storyboardChatExecutionContext(collector).configId,
+                configName:storyboardChatExecutionContext(collector).configName,
+                source:options.automatic ? 'storyboard-ai-asset-analysis' : 'manual-asset-analysis',
+                generatedAt:Date.now()
+            };
+        }
+        delete collector.assetAnalysisProgress;
+        delete collector.assetAnalysisStartedAt;
+        if(!options.automatic) toast(`AI资产分析失败：${collector.assetAnalysisError}`);
+        scheduleSave();
+    } finally {
+        shotAssetLiveAnalysisIds.delete(collector.id);
+        delete collector.assetAnalysisRunning;
+        render();
+    }
+}
+
+function shotAssetCollectorDemands(collector){
+    const state = shotAssetCollectorAnalysisState(collector);
+    if(state.analysis?.status !== 'ready') return [];
+    const order = {character:1, scene:2, wardrobe:3, prop:4, other:5};
+    return (Array.isArray(state.analysis?.demands) ? state.analysis.demands : []).slice().sort((a, b) => {
         return (order[a.type] || 9) - (order[b.type] || 9) || String(a.label).localeCompare(String(b.label), 'zh-CN');
     });
 }
 
+function shotAssetDemandBaseLabel(demand){
+    if(demand?.baseLabel) return String(demand.baseLabel).trim();
+    return String(demand?.label || '').replace(/\s*·\s*造型版本\d+\s*$/, '').trim();
+}
+
+function shotAssetCardsForDemand(collector, demand){
+    if(!collector || !demand) return [];
+    const cardIds = new Set((Array.isArray(demand.cardIds) ? demand.cardIds : [demand.cardId]).filter(Boolean));
+    const cards = shotAssetCollectorCards(collector);
+    const selected = cards.filter(card => cardIds.has(card.id));
+    return selected;
+}
+
+function shotAssetCharacterContextForDemand(collector, demand){
+    const baseLabel = shotAssetDemandBaseLabel(demand);
+    const cards = shotAssetCardsForDemand(collector, demand);
+    const profiles = Array.isArray(demand?.profiles) ? demand.profiles : [];
+    const groups = shotAssetCharacterVariantGroups(collector, baseLabel);
+    const profilesByCardId = new Map(profiles.map(profile => [profile?.cardId, profile]));
+    const merge = field => shotAssetUniqueTextValues(profiles.flatMap(profile => profile?.[field] || []));
+    const identity = baseLabel;
+    const context = {
+        type:'character',
+        label:String(demand?.label || baseLabel).trim() || baseLabel,
+        baseLabel,
+        variantIndex:Number(demand?.variantIndex) || 0,
+        variantCount:Number(demand?.variantCount) || 1,
+        identity,
+        identityFacts:shotAssetUniqueTextValues([...(demand?.identityFacts || []), baseLabel]),
+        ageGender:merge('ageGender'),
+        role:merge('role'),
+        appearance:merge('appearance'),
+        hair:merge('hair'),
+        wardrobe:merge('wardrobe'),
+        demeanor:merge('demeanor'),
+        period:merge('period'),
+        cards:cards.map(card => {
+            const profile = profilesByCardId.get(card.id) || {};
+            return {
+                id:card.id,
+                story:shotAssetCardLabel(card),
+                timeRange:String(card.shot?.timeRange || '').trim(),
+                purpose:String(card.shot?.purpose || '').trim().slice(0, 180),
+                stableFacts:shotAssetUniqueTextValues([
+                    ...(profile.ageGender || []),
+                    ...(profile.role || []),
+                    ...(profile.appearance || []),
+                    ...(profile.hair || []),
+                    ...(profile.wardrobe || []),
+                    ...(profile.demeanor || []),
+                    ...(profile.period || [])
+                ])
+            };
+        })
+    };
+    context.variants = (groups || []).map((group, index) => ({
+        label:baseLabel + ' · 造型版本' + (index + 1),
+        index,
+        cards:(group.profiles || []).map(profile => profile.cardId),
+        stableFacts:shotAssetUniqueTextValues((group.profiles || []).flatMap(profile => [
+            ...(profile.ageGender || []),
+            ...(profile.role || []),
+            ...(profile.appearance || []),
+            ...(profile.hair || []),
+            ...(profile.wardrobe || []),
+            ...(profile.demeanor || []),
+            ...(profile.period || [])
+        ]))
+    }));
+    context.signature = JSON.stringify({
+        label:smartAssetTextKey(context.label),
+        baseLabel:smartAssetTextKey(context.baseLabel),
+        variantIndex:context.variantIndex,
+        variantCount:context.variantCount,
+        identity:smartAssetTextKey(context.identity),
+        identityFacts:context.identityFacts.map(smartAssetTextKey).sort(),
+        ageGender:context.ageGender.map(smartAssetTextKey).sort(),
+        role:context.role.map(smartAssetTextKey).sort(),
+        appearance:context.appearance.map(smartAssetTextKey).sort(),
+        hair:context.hair.map(smartAssetTextKey).sort(),
+        wardrobe:context.wardrobe.map(smartAssetTextKey).sort(),
+        demeanor:context.demeanor.map(smartAssetTextKey).sort(),
+        period:context.period.map(smartAssetTextKey).sort(),
+        cards:context.cards.map(card => ({id:card.id, timeRange:card.timeRange, stableFacts:card.stableFacts.map(smartAssetTextKey).sort()}))
+    });
+    return context;
+}
+
+function shotAssetPromptContextForDemand(collector, demand){
+    const category = shotAssetDemandCategory(demand);
+    if(category === 'character') return shotAssetCharacterContextForDemand(collector, demand);
+    const cards = shotAssetCardsForDemand(collector, demand);
+    const context = {
+        type:category,
+        label:String(demand?.label || '').trim(),
+        cards:cards.map(card => ({
+            id:card.id,
+            story:shotAssetCardLabel(card),
+            timeRange:String(card.shot?.timeRange || '').trim(),
+            subjects:String(card.shot?.subjects || '').trim(),
+            scene:category === 'scene' ? String(demand?.label || '').trim() : '',
+            purpose:String(card.shot?.purpose || '').trim().slice(0, 180)
+        }))
+    };
+    context.signature = JSON.stringify(context);
+    return context;
+}
+
+function shotAssetCharacterPromptFacts(context){
+    if(!context) return [];
+    const identity = String(context.identity || context.baseLabel || '').trim();
+    const facts = [];
+    const add = value => {
+        const text = String(value || '').trim();
+        if(!text || facts.some(item => shotAssetStableFactEquivalent(item, text))) return;
+        facts.push(text);
+    };
+    add(identity);
+    (context.ageGender || []).forEach(add);
+    (context.role || []).forEach(add);
+    (context.appearance || []).forEach(add);
+    (context.hair || []).forEach(value => add('发型为' + value));
+    (context.wardrobe || []).forEach(value => add('穿' + value.replace(/^穿着|^身穿/, '')));
+    (context.demeanor || []).forEach(value => add('气质为' + value));
+    (context.period || []).forEach(value => add('剧情时期为' + value));
+    return facts;
+}
 function shotAssetCandidateKey(img){
     if(!img?.url) return '';
     return img.assetCandidateKey || inputRefKey(img) || `url|${img.url}`;
@@ -1251,7 +1923,7 @@ function shotAssetPickerCandidateGroup(candidate, activeDemand=null){
     if(cat === 'prop') return candidate?.categoryName || '道具';
     const rawName = String(candidate?.name || candidate?.alias || candidate?.categoryName || '未命名资产').trim();
     if(cat === 'character'){
-        const demandLabel = String(activeDemand?.label || '').trim();
+        const demandLabel = String(activeDemand?.baseLabel || activeDemand?.label || '').trim();
         const hit = smartAssetNameParts(rawName).find(part => demandLabel && smartAssetTextKey(part) === smartAssetTextKey(demandLabel));
         return hit || rawName.replace(/(正脸|侧脸|三视图|四视图|表情|服装|特写|参考图|资产图).*/g, '').trim() || rawName;
     }
@@ -1271,9 +1943,11 @@ function shotAssetMatchSort(collector){
 function shotAssetDemandAliases(collector, demand){
     const maps = [collector?.assetIdentityAliases, demand?.aliases];
     const values = [];
+    const baseLabel = shotAssetDemandBaseLabel(demand);
+    if(baseLabel && baseLabel !== demand?.label) values.push(baseLabel);
     maps.forEach(map => {
         if(!map || typeof map !== 'object') return;
-        const raw = map[demand?.key] ?? map[demand?.label];
+        const raw = map[demand?.key] ?? map[demand?.label] ?? map[baseLabel];
         (Array.isArray(raw) ? raw : [raw]).forEach(value => {
             const text = String(value || '').trim();
             if(text && text !== demand?.label && !values.includes(text)) values.push(text);
@@ -1316,7 +1990,7 @@ function shotAssetMatchForCandidate(collector, demand, candidate){
     const candidateKey = shotAssetCandidateKey(candidate);
     const confirmed = shotAssetCollectorBindingKeys(collector, demand.key).has(candidateKey);
     const recommendation = shotAssetRecommendationFor(collector, demand.key, candidateKey);
-    const demandNames = [demand.label, ...shotAssetDemandAliases(collector, demand)]
+    const demandNames = [demand.label, demand.baseLabel, ...shotAssetDemandAliases(collector, demand)]
         .map(smartAssetTextKey)
         .filter(Boolean);
     const candidateNames = [candidate.name, candidate.alias, candidate.assetLabel]
@@ -1372,7 +2046,7 @@ function shotAssetRecommendationsNeedRefresh(collector){
     return collector.assetRecommendationSignature !== shotAssetRecommendationSignature(collector);
 }
 
-function shotAssetDefaultGenerationPrompt(demand){
+function shotAssetDefaultGenerationPrompt(demand, collector=null){
     if(shotAssetDemandCategory(demand) === 'prop'){
         return `道具资产图：${String(demand?.label || '').trim() || '道具'}。真实短剧拍摄用道具参考，横版16:9，清晰展示物体的完整外观、材质、尺寸关系和关键细节，背景简洁干净，不添加人物、文字、水印或无关物件。`;
     }
@@ -1380,20 +2054,91 @@ function shotAssetDefaultGenerationPrompt(demand){
     if(shotAssetDemandCategory(demand) === 'scene'){
         return `场景资产图：${label}。真人情感短剧写实场景参考，横版16:9，清楚呈现空间布局、入口和主要动线，真实自然光与生活质感。画面中不出现人物，不生成文字或水印。`;
     }
-    return `人物资产图：${label}。真人情感短剧写实角色参考，清楚呈现正面半身、三分之二侧面和自然表情，五官、发型、年龄感稳定，简洁中性背景，光线均匀。不添加剧情动作、场景道具、文字或水印。`;
+    const context = shotAssetCharacterContextForDemand(collector, demand);
+    const facts = shotAssetCharacterPromptFacts(context);
+    const subject = facts.join('，') || label;
+    const variantRule = Number(context?.variantCount) > 1
+        ? `当前为${context.label}，只保留该造型版本的稳定设定，不要把其他造型版本的服装、年龄阶段或剧情时期混入本图。`
+        : '';
+    return `人物资产图：${subject}。${variantRule}真人情感短剧写实角色参考，保持人物五官、年龄感、发型、服装和身份稳定，生成正面半身、三分之二侧面及自然讲解状态的角色参考图，简洁中性背景，均匀柔光。只生成独立角色参考，不带具体剧情内容、一次性动作、文字、水印或无关道具。`;
+}
+
+function shotAssetPromptIsLegacyFixedTemplate(prompt){
+    const text = String(prompt || '').trim();
+    return /^(?:人物|场景|道具)资产图：[\s\S]+真人情感短剧写实(?:角色|场景|拍摄用道具)参考/.test(text)
+        || /五官、发型、年龄感稳定，简洁中性背景/.test(text)
+        || /真人情感短剧写实角色参考[\s\S]*(?:不添加具体台词|不带具体台词|运镜、转场|剧情场景)/.test(text);
+}
+
+function shotAssetPromptRecordIsAutomatic(record){
+    if(!record || record.userEdited === true || record.aiOptimized === true || record.locked === true) return false;
+    const current = String(record.current || '').trim();
+    const original = String(record.original || '').trim();
+    return !record.optimized && (!original || current === original || shotAssetPromptIsLegacyFixedTemplate(current));
 }
 
 function shotAssetPromptRecord(collector, demand){
     if(!collector || !demand) return null;
     if(!collector.assetPromptDrafts || typeof collector.assetPromptDrafts !== 'object') collector.assetPromptDrafts = {};
-    const original = shotAssetDefaultGenerationPrompt(demand);
+    const context = shotAssetPromptContextForDemand(collector, demand);
+    const original = shotAssetDefaultGenerationPrompt(demand, collector);
+    const contextSignature = String(context?.signature || JSON.stringify(context || {}));
     const prev = collector.assetPromptDrafts[demand.key];
     if(!prev || typeof prev !== 'object'){
-        collector.assetPromptDrafts[demand.key] = {original, current:original, optimized:'', updatedAt:Date.now()};
+        collector.assetPromptDrafts[demand.key] = {
+            original,
+            generatedDefault:original,
+            current:original,
+            optimized:'',
+            contextSignature,
+            userEdited:false,
+            aiOptimized:false,
+            locked:false,
+            needsReview:false,
+            updatedAt:Date.now()
+        };
     } else {
-        prev.original = String(prev.original || original);
-        prev.current = String(prev.current || prev.original || original);
-        prev.optimized = String(prev.optimized || '');
+        const previousOriginal = String(prev.original || '');
+        const previousCurrent = String(prev.current || previousOriginal || original);
+        const hasPreviousContext = Boolean(String(prev.contextSignature || '').trim());
+        const contextChanged = hasPreviousContext
+            ? String(prev.contextSignature) !== contextSignature
+            : Boolean(previousCurrent);
+        const automatic = shotAssetPromptRecordIsAutomatic({...prev, original:previousOriginal, current:previousCurrent});
+        const legacyAutomatic = shotAssetPromptIsLegacyFixedTemplate(previousCurrent) && automatic;
+        if((contextChanged || legacyAutomatic) && automatic){
+            prev.original = original;
+            prev.generatedDefault = original;
+            prev.current = original;
+            prev.optimized = '';
+            prev.userEdited = false;
+            prev.aiOptimized = false;
+            prev.needsReview = false;
+            prev.pendingContextSignature = '';
+            prev.contextSignature = contextSignature;
+            prev.updatedAt = Date.now();
+            if(typeof scheduleSave === 'function') scheduleSave();
+        } else {
+            prev.original = previousOriginal || original;
+            prev.generatedDefault = original;
+            prev.current = previousCurrent;
+            if(contextChanged && hasPreviousContext){
+                prev.needsReview = true;
+                prev.pendingContextSignature = contextSignature;
+            } else if(!hasPreviousContext){
+                // 旧画布中的手动版本没有上下文签名，先保留原文并建立基线。
+                prev.contextSignature = contextSignature;
+                prev.needsReview = !automatic;
+                prev.pendingContextSignature = !automatic ? contextSignature : '';
+            }
+        }
+       prev.optimized = String(prev.optimized || '');
+        prev.userEdited = prev.userEdited === true;
+        prev.aiOptimized = prev.aiOptimized === true || Boolean(prev.optimized);
+        prev.locked = prev.locked === true;
+        prev.needsReview = prev.needsReview === true;
+        prev.generatedDefault = String(prev.generatedDefault || original);
+        if(!prev.contextSignature && !prev.pendingContextSignature) prev.contextSignature = contextSignature;
     }
     return collector.assetPromptDrafts[demand.key];
 }
@@ -1401,16 +2146,19 @@ function shotAssetPromptRecord(collector, demand){
 function shotAssetPromptBoxHtml(collector, demand){
     if(!demand) return '';
     const record = shotAssetPromptRecord(collector, demand);
+    const aiContext = storyboardChatExecutionContext(collector);
     const optimizing = collector.assetPromptOptimizingKey === demand.key;
+    const status = record.needsReview ? '故事来源已变化，请确认后重建' : (record.optimized ? '已有AI优化稿' : '默认折叠');
     return `<details class="shot-asset-prompt-box" data-asset-prompt-demand="${escapeAttr(demand.key)}">
-        <summary class="shot-asset-prompt-head"><b>生成${escapeHtml(shotAssetPickerCategoryLabel(shotAssetDemandCategory(demand)))}资产提示词</b><span>${record.optimized ? '已有AI优化稿' : '默认折叠'}</span></summary>
-        <div class="shot-asset-prompt-content">
-        <textarea class="shot-asset-prompt-text" data-demand-key="${escapeAttr(demand.key)}">${escapeHtml(record.current)}</textarea>
-        <div class="shot-asset-prompt-actions">
-            <button class="shot-asset-prompt-optimize" type="button" data-demand-key="${escapeAttr(demand.key)}" ${optimizing ? 'disabled' : ''}>${optimizing ? 'AI优化中...' : 'AI优化'}</button>
-            <button class="shot-asset-prompt-copy" type="button" data-demand-key="${escapeAttr(demand.key)}">复制</button>
-            <button class="shot-asset-prompt-reset" type="button" data-demand-key="${escapeAttr(demand.key)}">恢复默认</button>
-            <button class="shot-asset-prompt-create" type="button" data-demand-key="${escapeAttr(demand.key)}">创建生图节点</button>
+        <summary class="shot-asset-prompt-head"><b>生成${escapeHtml(shotAssetPickerCategoryLabel(shotAssetDemandCategory(demand)))}资产提示词</b><span>${status}</span></summary>
+       <div class="shot-asset-prompt-content">
+       <div class="shot-asset-prompt-provider">AI优化继承：${escapeHtml(storyboardChatExecutionLabel(aiContext))}</div>
+       <textarea class="shot-asset-prompt-text" data-demand-key="${escapeAttr(demand.key)}">${escapeHtml(record.current)}</textarea>
+       <div class="shot-asset-prompt-actions">
+           <button class="shot-asset-prompt-optimize" type="button" data-demand-key="${escapeAttr(demand.key)}" ${optimizing ? 'disabled' : ''}>${optimizing ? 'AI优化中...' : 'AI优化'}</button>
+           <button class="shot-asset-prompt-copy" type="button" data-demand-key="${escapeAttr(demand.key)}">复制</button>
+            <button class="shot-asset-prompt-reset" type="button" data-demand-key="${escapeAttr(demand.key)}">${record.needsReview ? '按新故事重建' : '恢复默认'}</button>
+           <button class="shot-asset-prompt-create" type="button" data-demand-key="${escapeAttr(demand.key)}">创建生图节点</button>
         </div>
         </div>
     </details>`;
@@ -1428,6 +2176,7 @@ function shotAssetRecommendationFor(collector, demandKey, candidateKey){
 function shotAssetRecommendationBarHtml(collector){
     const recommendation = collector?.assetRecommendations;
     const running = collector?.assetRecommendationRunning === true;
+    const aiLabel = storyboardChatExecutionLabel(promptOptimizationConfigForCollector(collector).executionContext);
     const count = recommendation?.byDemand && typeof recommendation.byDemand === 'object'
         ? Object.values(recommendation.byDemand).reduce((sum, items) => sum + (Array.isArray(items) ? items.length : 0), 0)
         : 0;
@@ -1437,13 +2186,14 @@ function shotAssetRecommendationBarHtml(collector){
         ? `已推荐 ${count} 项，仍需手动勾选确认`
         : 'AI只做推荐，不会自动绑定或替换资产';
     return `<div class="shot-asset-ai-recommendation ${running ? 'running' : count ? 'ready' : ''}">
-        <div><b>AI资产建议</b><span>${escapeHtml(status)}</span>${recommendation?.summary ? `<small>${escapeHtml(recommendation.summary)}</small>` : ''}</div>
+        <div><b>AI资产建议</b><span>${escapeHtml(status)}</span><small class="shot-asset-ai-execution">执行：${escapeHtml(aiLabel)}</small>${recommendation?.summary ? `<small class="shot-asset-ai-summary">${escapeHtml(recommendation.summary)}</small>` : ''}</div>
         <button class="shot-asset-ai-recommend" type="button" ${running ? 'disabled' : ''}>${running ? '匹配中...' : count ? '重新匹配' : '开始匹配'}</button>
     </div>`;
 }
 
 function shotAssetSceneAnalysisBarHtml(collector){
     const running = collector?.sceneAnalysisRunning === true;
+    const aiLabel = storyboardChatExecutionLabel(promptOptimizationConfigForCollector(collector).executionContext);
     const sceneCount = Array.isArray(collector?.sceneRegistry) ? collector.sceneRegistry.filter(item => shotAssetSceneLooksLikePhysicalLocation(item?.canonicalName)).length : 0;
     const status = running
         ? 'AI正在把整段故事的场景放在一起判断...'
@@ -1451,7 +2201,7 @@ function shotAssetSceneAnalysisBarHtml(collector){
         ? `已统一整理 ${sceneCount} 个场景，镜头需求会按场景 ID 合并`
         : '先统一判断“房间/室内”是否同一空间，再分开“出租屋/婚礼现场”等具体地点';
     return `<div class="shot-asset-scene-analysis ${running ? 'running' : sceneCount ? 'ready' : ''}">
-        <div><b>全剧场景整理</b><span>${escapeHtml(status)}</span></div>
+        <div><b>全剧场景整理</b><span>${escapeHtml(status)}</span><small class="shot-asset-ai-execution">执行：${escapeHtml(aiLabel)}</small></div>
         <button class="shot-asset-ai-scenes" type="button" data-shot-asset-scene-action="analyze" ${running ? 'disabled' : ''}>${running ? '整理中...' : sceneCount ? '重新整理场景' : 'AI整理场景'}</button>
     </div>`;
 }
@@ -1511,7 +2261,7 @@ async function recommendShotAssetsWithAi(collector, options={}){
                 story:shotAssetCardLabel(card),
                 time:card.shot?.timeRange || '',
                 subjects:card.shot?.subjects || '',
-                scene:shotAssetSceneForCard(collector, card).label || '',
+                scene:demand.type === 'scene' ? String(demand.label || '').trim() : '',
                 purpose:card.shot?.purpose || ''
             }));
         return {id, type:shotAssetDemandCategory(demand), name:demand.label, aliases:shotAssetDemandAliases(collector, demand), storyboards:demand.shotLabels, context};
@@ -1542,13 +2292,13 @@ async function recommendShotAssetsWithAi(collector, options={}){
         const payload = window.ScriptToStoryboard?.extractJson?.(result.text);
         if(!payload) throw new Error('AI没有返回可解析的资产建议');
         const normalized = normalizeShotAssetRecommendations(payload, demandById, candidateById);
-        collector.assetRecommendations = {...normalized, provider:result.provider, model:result.model, generatedAt:Date.now()};
+        collector.assetRecommendations = {...normalized, provider:result.provider, model:result.model, providerName:ai.executionContext?.providerName || '', configId:ai.executionContext?.configId || '', configName:ai.executionContext?.configName || '', executionContext:result.executionContext || ai.executionContext || {}, generatedAt:Date.now()};
         collector.assetRecommendationSignature = inputSignature;
         const count = Object.values(normalized.byDemand).reduce((sum, items) => sum + items.length, 0);
         toast(count ? `AI已标出 ${count} 项候选，请手动确认` : 'AI没有发现足够可靠的匹配，未改动任何绑定');
         scheduleSave();
     } catch(error){
-        toast(`AI资产匹配失败：${String(error?.message || error).slice(0, 100)}`);
+        toast(`${storyboardChatExecutionLabel(promptOptimizationConfigForCollector(collector).executionContext)}：AI资产匹配失败：${String(error?.message || error).slice(0, 100)}`);
     } finally {
         collector.assetRecommendationRunning = false;
         render();
@@ -1678,11 +2428,15 @@ async function analyzeShotScenesWithAi(collector, options={}){
         collector.sceneAnalysisSignature = inputSignature;
         collector.sceneAnalysisProvider = result.provider;
         collector.sceneAnalysisModel = result.model;
+        collector.sceneAnalysisProviderName = ai.executionContext?.providerName || '';
+        collector.sceneAnalysisConfigId = ai.executionContext?.configId || '';
+        collector.sceneAnalysisConfigName = ai.executionContext?.configName || '';
+        collector.sceneAnalysisExecutionContext = result.executionContext || ai.executionContext || {};
         collector.sceneAnalysisGeneratedAt = Date.now();
         scheduleSave();
         toast(`AI已统一整理 ${normalized.scenes.length} 个场景，已同步到镜头需求`);
     } catch(error){
-        toast(`AI场景整理失败：${String(error?.message || error).slice(0, 100)}`);
+        toast(`${storyboardChatExecutionLabel(promptOptimizationConfigForCollector(collector).executionContext)}：AI场景整理失败：${String(error?.message || error).slice(0, 100)}`);
     } finally {
         collector.sceneAnalysisRunning = false;
         render();
@@ -1964,11 +2718,56 @@ function smartStoryboardPromptWithAssetMentions(source, prompt=''){
     return `${head}\n${text}`.trim();
 }
 
+function storyboardAssetPanelFactsForCard(collector, card, demands){
+    const characters = demands.filter(demand => demand.type === 'character');
+    const scenes = demands.filter(demand => demand.type === 'scene');
+    const props = demands.filter(demand => demand.type === 'prop');
+    const contexts = characters.map(demand => shotAssetCharacterContextForDemand(collector, demand));
+    const unique = values => shotAssetUniqueTextValues(values);
+    const time = unique([
+        card?.shot?.timeState,
+        card?.shot?.period,
+        card?.shot?.timePeriod,
+        card?.shot?.visualExtract?.timeState,
+        card?.shot?.visualExtract?.period,
+        card?.shot?.timeRange
+    ])[0] || '';
+    return {
+        main:characters[0]?.label || '',
+        second:characters[1]?.label || '',
+        third:characters[2]?.label || '',
+        scene:unique(scenes.map(demand => demand.label)).join('、'),
+        time,
+        wardrobe:unique(contexts.flatMap(context => context?.wardrobe || [])).join('、'),
+        props:unique(props.map(demand => demand.label)),
+        characterCount:characters.length,
+        sceneCount:scenes.length,
+        propCount:props.length
+    };
+}
+
+function storyboardAssetPanelStateForCard(collector, demands, refs){
+    if(!collector) return {className:'muted', text:'未连接资产收集器'};
+    const state = shotAssetCollectorAnalysisState(collector);
+    if(state.status === 'queued') return {className:'pending', text:'等待AI整理资产清单'};
+    if(state.status === 'running') return {className:'running', text:'AI正在整理资产清单'};
+    if(state.status === 'error' && state.analysis?.status === 'ready' && demands.length) return {className:'error', text:'本次分析失败，暂显示上次资产清单'};
+    if(state.status === 'error') return {className:'error', text:'AI资产清单失败，请在收集器中重新分析'};
+    if(state.status !== 'ready') return {className:'pending', text:'等待故事板AI返回资产清单'};
+    if(state.stale) return {className:'pending', text:'故事板内容已变化，请重新分析资产清单'};
+    if(!demands.length) return {className:'muted', text:'本卡没有识别到人物、场景或道具需求'};
+    if(!refs.length) return {className:'pending', text:`已识别 ${demands.length} 项需求，尚未绑定参考图`};
+    return {className:'ready', text:`已识别 ${demands.length} 项需求，已分发 ${refs.length} 张参考图`};
+}
+
 function smartStoryboardAssetPanelHtml(node){
-    const fields = smartStoryboardAssetFields(node?.shot || {});
     const collector = shotAssetCollectorForCard(node);
     const demands = collector ? shotAssetCollectorDemandsForCard(collector, node) : [];
     const refs = collector ? shotAssetCollectorRefsForCard(node) : [];
+    const fields = collector
+        ? storyboardAssetPanelFactsForCard(collector, node, demands)
+        : smartStoryboardAssetFields(node?.shot || {});
+    const state = storyboardAssetPanelStateForCard(collector, demands, refs);
     const rows = demands.map(demand => {
         const bindings = shotAssetCollectorBindings(collector, demand.key);
         const noAsset = shotAssetCollectorNoAsset(collector, demand.key);
@@ -1982,20 +2781,21 @@ function smartStoryboardAssetPanelHtml(node){
     }).join('');
     return `<div class="storyboard-asset-panel">
         <div class="storyboard-asset-head">
-            <b>收集器分发资产</b>
-            <span>${collector ? `${refs.length} 张已分发` : '未连接收集器'}</span>
+            <b>故事板资产清单 · 收集器分发</b>
+            <span>${collector ? `${demands.length} 项需求 · ${refs.length} 张已分发` : '未连接收集器'}</span>
         </div>
+        <div class="storyboard-asset-state ${escapeAttr(state.className)}">${escapeHtml(state.text)}</div>
         <div class="storyboard-asset-grid">
             <span><b>主要</b>${escapeHtml(fields.main || '-')}</span>
             <span><b>第二</b>${escapeHtml(fields.second || '-')}</span>
             <span><b>第三</b>${escapeHtml(fields.third || '-')}</span>
             <span><b>场景</b>${escapeHtml(fields.scene || '-')}</span>
-            <span><b>时间</b>${escapeHtml(fields.timeState || '-')}</span>
+            <span><b>时间</b>${escapeHtml(fields.time || '-')}</span>
             <span><b>服装</b>${escapeHtml(fields.wardrobe || '-')}</span>
             <span><b>道具</b>${escapeHtml((fields.props || []).join('、') || '-')}</span>
         </div>
-        <div class="storyboard-asset-list">${rows || '<div class="storyboard-asset-empty">人物收集器会随故事板自动创建并连接，可在收集器中为人物绑定参考图。</div>'}</div>
-        <div class="storyboard-asset-rule">本卡只显示人物绑定结果；每个人可在“故事板人物收集器”中绑定多张参考图。</div>
+        <div class="storyboard-asset-list">${rows || `<div class="storyboard-asset-empty">${escapeHtml(state.text)}。</div>`}</div>
+        <div class="storyboard-asset-rule">卡片和收集器使用同一份 AI 资产清单；绑定的参考图会随本卡提示词一起使用。</div>
     </div>`;
 }
 
@@ -2063,17 +2863,19 @@ function shotAssetCollectorBodyHtml(node){
             : effectiveNoAsset ? '已标记无资产，生成时只用文字描述' : '未绑定，可先生成，也可选择参考图';
         return `<div class="shot-asset-demand-row ${active ? 'active' : ''} ${bindings.length || effectiveNoAsset ? 'ready' : ''}" data-demand-key="${escapeAttr(demand.key)}">
             <div class="shot-asset-demand-main">
-                <span class="shot-asset-demand-type">${escapeHtml(shotAssetDemandTypeLabel(demand.type))}</span>
-                <strong>${escapeHtml(demand.label)}</strong>
+                <div class="shot-asset-demand-title">
+                    <span class="shot-asset-demand-type">${escapeHtml(shotAssetDemandTypeLabel(demand.type))}</span>
+                    <strong>${escapeHtml(demand.label)}</strong>
+                </div>
                 <em>${escapeHtml(demand.shotLabels.slice(0, 6).join('、') || '-')}</em>
                 <small>${escapeHtml(statusText)}</small>
             </div>
             <div class="shot-asset-demand-actions">
-                <button class="shot-asset-open-demand" type="button" data-demand-key="${escapeAttr(demand.key)}">${active ? '正在选择' : '选择资产'}</button>
+                <button class="shot-asset-open-demand" type="button" data-demand-key="${escapeAttr(demand.key)}">${active ? '正在选择' : '选择参考图'}</button>
                 ${canMarkNoAsset ? `
                 <label class="shot-asset-none ${noAsset ? 'selected' : ''}">
                     <input class="shot-asset-no-asset" type="checkbox" data-demand-key="${escapeAttr(demand.key)}" ${noAsset ? 'checked' : ''}>
-                    无资产
+                    不用参考图
                 </label>` : ''}
             </div>
         </div>`;
@@ -2087,7 +2889,7 @@ function shotAssetCollectorBodyHtml(node){
         <div class="shot-asset-heading">
             <div>
                 <div class="shot-asset-title">故事板资产收集器</div>
-                <div class="shot-asset-sub">按镜头需求选择人物和场景参考图，支持多选，不会跳回顶部。</div>
+                <div class="shot-asset-sub">按同一份 AI 资产清单选择人物、场景和道具参考图，支持多选。</div>
             </div>
             <div class="shot-asset-stats">
                 <span><b>${cards.length}</b>故事板</span>
@@ -2099,11 +2901,12 @@ function shotAssetCollectorBodyHtml(node){
         <div class="shot-asset-controlbar">
             <div class="shot-asset-linked">故事板：${escapeHtml(shotNames || '未连接故事板')}</div>
             <div class="shot-asset-switches">
-                <label title="从项目资产库读取人物和场景图片"><input class="shot-asset-toggle" data-shot-asset-key="useAssetLibrary" type="checkbox" ${node.useAssetLibrary === true && node.manualSelectionOnly === false ? 'checked' : ''}>项目资产库</label>
+                <label title="从项目资产库读取人物、场景和道具图片"><input class="shot-asset-toggle" data-shot-asset-key="useAssetLibrary" type="checkbox" ${node.useAssetLibrary === true && node.manualSelectionOnly === false ? 'checked' : ''}>项目资产库</label>
                 <label title="读取连入的图片节点"><input class="shot-asset-toggle" data-shot-asset-key="useCanvasInputs" type="checkbox" ${node.useCanvasInputs !== false ? 'checked' : ''}>连入图片</label>
                 <label title="把上一镜结束帧作为连续性参考"><input class="shot-asset-toggle" data-shot-asset-key="inheritPrevious" type="checkbox" ${node.inheritPrevious !== false ? 'checked' : ''}>上一镜结束帧</label>
             </div>
         </div>
+        ${shotAssetAnalysisStatusHtml(node)}
         ${shotAssetSceneAnalysisBarHtml(node)}
         ${shotAssetRecommendationBarHtml(node)}
         <div class="shot-asset-category-tabs">${categoryTabs}</div>
@@ -2118,7 +2921,7 @@ function shotAssetCollectorBodyHtml(node){
             <div class="shot-asset-footer-selected"><b>当前已选 ${activeBindings.length} 张</b>${activeBindingChips || '<span class="shot-asset-footer-empty">选择图片后会显示在这里</span>'}</div>
             <button class="shot-asset-finish" type="button">完成绑定</button>
         </div>
-        <div class="shot-asset-rule">仅人物和场景进入本收集器；服装、道具、风格参考由原节点自行处理。</div>
+        <div class="shot-asset-rule">人物、场景和道具来自同一份 AI 资产清单；服装、发型和气质归入对应人物设定。</div>
     </div>`;
 }
 
@@ -2158,8 +2961,13 @@ function smartAssetHubBodyHtml(node){
 
 function storyboardAiConfigForCard(card){
     const source = nodes.find(item => item.id === card?.sourceStoryboardId && item.type === 'script-storyboard');
-    const provider = resolveChatProviderId(source?.llmProvider || '');
-    return {provider, model:resolveChatModel(source?.llmModel || '', provider)};
+    const storedProvider = String(source?.llmProvider || '').trim();
+    const provider = storedProvider || resolveChatProviderId('');
+    const storedModel = String(source?.llmModel || '').trim();
+    const providerModels = typeof providerChatModels === 'function' ? providerChatModels(provider) : [];
+    const model = storedModel || (storedProvider ? (providerModels[0] || '') : resolveChatModel('', provider));
+    const executionContext = storyboardChatExecutionContext(source || {}, {providerId:provider, model});
+    return {provider, model, executionContext, strictProvider:Boolean(storedProvider)};
 }
 
 function normalizeStoryboardDirectorReview(payload){
@@ -2197,8 +3005,9 @@ function normalizeStoryboardDirectorReview(payload){
 
 function storyboardDirectorReviewHtml(node){
     const review = node?.directorReview;
+    const aiLabel = storyboardChatExecutionLabel(review?.executionContext || storyboardAiConfigForCard(node).executionContext);
     if(node?.directorReviewRunning){
-        return `<div class="storyboard-director-review running"><div class="storyboard-director-review-head"><b>导演复核</b><span>AI正在检查剧情可读性与连续性...</span></div></div>`;
+        return `<div class="storyboard-director-review running"><div class="storyboard-director-review-head"><b>导演复核</b><span>AI正在检查剧情可读性与连续性...</span><small class="storyboard-ai-execution">执行：${escapeHtml(aiLabel)}</small></div></div>`;
     }
     if(!review || typeof review !== 'object') return '';
     const labels = {pass:'通过', warning:'有提醒', revise:'建议修改'};
@@ -2209,7 +3018,7 @@ function storyboardDirectorReviewHtml(node){
         ${item.suggestion ? `<small>${escapeHtml(item.suggestion)}</small>` : ''}
     </div>`).join('');
     return `<div class="storyboard-director-review ${escapeAttr(review.status || 'warning')}">
-        <div class="storyboard-director-review-head"><div><b>导演复核 · ${escapeHtml(labels[review.status] || '已完成')}</b><span>${escapeHtml(String(review.score ?? '-'))}分 · 只提醒，不阻断生成</span></div><time>${escapeHtml(new Date(review.reviewedAt || Date.now()).toLocaleString('zh-CN', {hour:'2-digit', minute:'2-digit'}))}</time></div>
+        <div class="storyboard-director-review-head"><div><b>导演复核 · ${escapeHtml(labels[review.status] || '已完成')}</b><span>${escapeHtml(String(review.score ?? '-'))}分 · 只提醒，不阻断生成</span><small class="storyboard-ai-execution">执行：${escapeHtml(aiLabel)}</small></div><time>${escapeHtml(new Date(review.reviewedAt || Date.now()).toLocaleString('zh-CN', {hour:'2-digit', minute:'2-digit'}))}</time></div>
         <p>${escapeHtml(review.summary || '')}</p>
         ${issues ? `<div class="storyboard-director-issues">${issues}</div>` : '<div class="storyboard-director-pass">没有发现需要处理的问题。</div>'}
     </div>`;
@@ -2253,11 +3062,11 @@ async function reviewStoryboardCardWithAi(node){
         const result = await requestSmartCanvasLlmText(message, {...ai, systemPrompt});
         const payload = window.ScriptToStoryboard?.extractJson?.(result.text);
         if(!payload) throw new Error('AI没有返回可解析的复核结果');
-        node.directorReview = {...normalizeStoryboardDirectorReview(payload), provider:result.provider, model:result.model};
+        node.directorReview = {...normalizeStoryboardDirectorReview(payload), provider:result.provider, model:result.model, executionContext:result.executionContext || ai.executionContext || {}};
         toast(node.directorReview.status === 'pass' ? '导演复核通过' : `导演复核完成：${node.directorReview.issues.length} 项提醒`);
         scheduleSave();
     } catch(error){
-        toast(`导演复核失败：${String(error?.message || error).slice(0, 100)}`);
+        toast(`${storyboardChatExecutionLabel(storyboardAiConfigForCard(node).executionContext)}：导演复核失败：${String(error?.message || error).slice(0, 100)}`);
     } finally {
         node.directorReviewRunning = false;
         render();
@@ -2641,11 +3450,38 @@ function storyboardOutputSettingsRows(node){
     ];
 }
 
+function storyboardOutputAspectRatio(node){
+    const settings = node?.runSettings && typeof node.runSettings === 'object' ? node.runSettings : {};
+    const raw = String(
+        settings.apiKind === 'video'
+            ? (settings.videoAspect || settings.aspectRatio || settings.aspect_ratio || '')
+            : (settings.aspectRatio || settings.aspect_ratio || settings.customRatio || settings.ratio || '')
+    ).trim().toLowerCase();
+    const named = {
+        square:'1 / 1',
+        poster45:'4 / 5',
+        portrait43:'3 / 4',
+        portrait:'2 / 3',
+        story:'9 / 16',
+        landscape54:'5 / 4',
+        landscape43:'4 / 3',
+        wide:'16 / 9',
+        landscape:'3 / 2',
+        ultrawide:'21 / 9',
+        ultratall:'9 / 21'
+    };
+    if(named[raw]) return named[raw];
+    const match = raw.match(/^(\d+(?:\.\d+)?)\s*[:/]\s*(\d+(?:\.\d+)?)$/);
+    return match ? `${match[1]} / ${match[2]}` : '16 / 9';
+}
+
 function storyboardOutputMediaHtml(node){
     const imgs = (node?.images || []).map(imageForDisplay).filter(img => img?.url);
+    const aspectRatio = storyboardOutputAspectRatio(node);
+    const aspectStyle = `--storyboard-output-aspect-ratio:${escapeAttr(aspectRatio)}`;
     if(!imgs.length){
         const running = Boolean(node?.pending || node?.running || node?.queued || node?.jimengPending);
-        return `<div class="storyboard-output-empty">${running ? '生成中...' : '生成结果会显示在这里'}</div>`;
+        return `<div class="storyboard-output-empty" style="${aspectStyle}">${running ? '生成中...' : '生成结果会显示在这里'}</div>`;
     }
     const first = imgs[0];
     const media = typeof singleMediaHtml === 'function'
@@ -2653,7 +3489,7 @@ function storyboardOutputMediaHtml(node){
         : `<img src="${escapeAttr(first.url)}" alt="">`;
     const badge = typeof imageResolutionBadgeHtml === 'function' ? imageResolutionBadgeHtml(first) : '';
     const selected = selectedImage?.nodeId === node?.id && Number(selectedImage?.index) === 0 ? 'image-selected' : '';
-    return `<div class="storyboard-output-media ${selected}" data-image-index="0" data-media-signature="${escapeAttr(`${mediaKindForItem(first)}:${first?.url || ''}`)}">${media}${badge}</div>`;
+    return `<div class="storyboard-output-media ${selected}" style="${aspectStyle}" data-image-index="0" data-media-signature="${escapeAttr(`${mediaKindForItem(first)}:${first?.url || ''}`)}">${media}${badge}</div>`;
 }
 
 function smartStoryboardOutputNodeBodyHtml(node){
@@ -2687,10 +3523,15 @@ function smartStoryboardOutputNodeBodyHtml(node){
 function configureStoryboardOutputNode(target, source, prompt, settingsPatch, kind){
     const cleanPrompt = String(prompt || '').trim();
     if(!target || !source || !cleanPrompt) return false;
+    const executionContext = storyboardChatExecutionContext(source);
     const title = `${source.shot?.shotNumber || '镜头'} ${kind === 'video' ? '视频' : kind === 'frame-preview' ? '预演图' : '整段故事板'}`;
     target.title = title;
     target.storyboardSourceCardId = source.id;
     target.storyboardOutputKind = kind;
+    target.storyboardExecutionContext = {...executionContext};
+    target.promptOptimizeProvider = executionContext.providerId;
+    target.promptOptimizeModel = executionContext.model;
+    target.promptOptimizeExecutionContext = {...executionContext};
     target.runSettings = typeof posterFrameNormalizedRunSettings === 'function' && kind !== 'video'
         ? posterFrameNormalizedRunSettings(settingsPatch)
         : cloneSmartSettings(settingsPatch);
@@ -2923,7 +3764,7 @@ function legacyStoryboardGenerationGuard(source){
     const collector = shotAssetCollectorForCard(source);
     if(!collector || collector.enforcePreflight !== true) return true;
     const report = shotAssetCollectorPreflight(collector);
-    const cardDemandKeys = new Set(shotAssetDemandItemsForCard(source).map(item => item.key));
+    const cardDemandKeys = new Set(shotAssetDemandItemsForCard(source, collector).map(item => item.key));
     const missing = report.missing.filter(item => cardDemandKeys.has(item.key));
     collector.lastPreflightAt = Date.now();
     if(missing.length){
@@ -3632,6 +4473,13 @@ function bindShotAssetCollectorControls(el, node){
             recommendShotAssetsWithAi(node, {force:true});
         };
     });
+    el.querySelectorAll('.shot-asset-analysis-retry').forEach(btn => {
+        btn.onclick = e => {
+            e.preventDefault();
+            e.stopPropagation();
+            analyzeShotAssetsWithAi(node, {force:true});
+        };
+    });
     el.querySelectorAll('.shot-asset-check').forEach(input => {
         input.onchange = e => {
             savePickerScroll();
@@ -3680,6 +4528,7 @@ function bindShotAssetCollectorControls(el, node){
             const record = shotAssetPromptRecord(node, demand);
             if(record){
                 record.current = e.target.value;
+                record.userEdited = true;
                 record.updatedAt = Date.now();
                 scheduleSave();
             }
@@ -3709,9 +4558,17 @@ function bindShotAssetCollectorControls(el, node){
             const demand = shotAssetCollectorDemands(node).find(item => item.key === btn.dataset.demandKey);
             const record = shotAssetPromptRecord(node, demand);
             if(record){
-                record.current = shotAssetDefaultGenerationPrompt(demand);
+                const freshContext = shotAssetPromptContextForDemand(node, demand);
+                record.current = shotAssetDefaultGenerationPrompt(demand, node);
                 record.original = record.current;
+                record.generatedDefault = record.current;
                 record.optimized = '';
+                record.userEdited = false;
+                record.aiOptimized = false;
+                record.locked = false;
+                record.needsReview = false;
+                record.pendingContextSignature = '';
+                record.contextSignature = String(freshContext?.signature || JSON.stringify(freshContext || {}));
                 record.updatedAt = Date.now();
                 render();
                 scheduleSave();
@@ -3813,11 +4670,16 @@ function bindScriptStoryboardControls(el, node){
     if(providerEl) providerEl.onchange = e => {
         node.llmProvider = resolveChatProviderId(e.target.value);
         node.llmModel = resolveChatModel('', node.llmProvider);
+        applyStoryboardChatExecutionContext(node, storyboardChatExecutionContext(node));
         render();
         scheduleSave();
     };
     const modelEl = el.querySelector('.storyboard-model');
-    if(modelEl) modelEl.onchange = e => { node.llmModel = e.target.value; scheduleSave(); };
+    if(modelEl) modelEl.onchange = e => {
+        node.llmModel = e.target.value;
+        applyStoryboardChatExecutionContext(node, storyboardChatExecutionContext(node));
+        scheduleSave();
+    };
     const resetEl = el.querySelector('.storyboard-reset');
     if(resetEl) resetEl.onclick = e => {
         e.preventDefault();
@@ -3902,10 +4764,16 @@ function refreshShotAssetCollectorCandidates(){
     render();
 }
 
-function createSmartStoryboardOutputs(source, shots){
+function createSmartStoryboardOutputs(source, shots, aiPayload=null){
     deleteSmartStoryboardOutputs(source.id);
     const baseX = Number(source.x || 0) + Math.max(Number(source.w || 430), 430) + 120;
     const baseY = Number(source.y || 0);
+    const executionContext = storyboardChatExecutionContext(source);
+    // 新流程只把故事板卡作为事实来源，资产分类在同一接口/模型上异步完成。
+    // 兼容旧响应中的显式 assetManifest，但不再把 characterProfiles 的本地兜底当成已完成分析。
+    const assetManifest = aiPayload && typeof aiPayload === 'object' && aiPayload.assetManifest && typeof aiPayload.assetManifest === 'object'
+        ? aiPayload.assetManifest
+        : null;
     const createdCards = [];
     shots.forEach((shot, index) => {
         const card = {
@@ -3917,6 +4785,7 @@ function createSmartStoryboardOutputs(source, shots){
             h:600,
             sourceStoryboardId:source.id,
             cardKind:'storyboard',
+            storyboardExecutionContext:{...executionContext},
             shot,
             created_at:Date.now()
         };
@@ -3941,8 +4810,16 @@ function createSmartStoryboardOutputs(source, shots){
         sceneAnalysisSignature:'',
         sceneAnalysisRunning:false,
         sourceStoryboardId:source.id,
+        storyboardExecutionContext:{...executionContext},
+        llmProvider:executionContext.providerId,
+        llmProviderName:executionContext.providerName,
+        llmModel:executionContext.model,
+        llmConfigId:executionContext.configId,
+        llmConfigName:executionContext.configName,
         shotAssetBindings:{},
         shotAssetNoAsset:{},
+        assetAnalysisStatus:'queued',
+        assetAnalysisProgress:{current:0, total:0},
         continuityOverrides:{},
         useAssetLibrary:true,
         manualSelectionOnly:false,
@@ -3954,8 +4831,65 @@ function createSmartStoryboardOutputs(source, shots){
     };
     nodes.push(collector);
     createdCards.forEach(card => addConnection(card.id, collector.id, 'input'));
+    if(assetManifest){
+        const boundManifest = bindShotAssetManifestToCards(assetManifest, createdCards);
+        const signature = shotAssetCollectorAnalysisSignature(collector);
+        const analysis = normalizeShotAssetAiAnalysis(boundManifest, collector, createdCards, signature);
+        analysis.provider = executionContext.providerId;
+        analysis.providerName = executionContext.providerName;
+        analysis.model = executionContext.model;
+        analysis.configId = executionContext.configId;
+        analysis.configName = executionContext.configName;
+        analysis.source = 'storyboard-ai';
+        collector.assetManifest = boundManifest;
+        collector.assetAnalysis = analysis;
+        collector.assetAnalysisStatus = 'ready';
+        collector.assetAnalysisProvider = executionContext.providerId;
+        collector.assetAnalysisProviderName = executionContext.providerName;
+        collector.assetAnalysisModel = executionContext.model;
+        collector.assetAnalysisConfigId = executionContext.configId;
+        collector.assetAnalysisConfigName = executionContext.configName;
+        collector.assetAnalysisSource = 'storyboard-ai';
+        collector.assetAnalysisError = '';
+    } else {
+        const signature = shotAssetCollectorAnalysisSignature(collector);
+        collector.assetAnalysis = {
+            status:'queued',
+            signature,
+            version:SHOT_ASSET_ANALYSIS_VERSION,
+            demands:[],
+            characters:[],
+            scenes:[],
+            props:[],
+            visualElements:[],
+            ignored:[],
+            provider:executionContext.providerId,
+            providerName:executionContext.providerName,
+            model:executionContext.model,
+            configId:executionContext.configId,
+            configName:executionContext.configName,
+            source:'storyboard-ai-asset-analysis',
+            generatedAt:Date.now()
+        };
+    }
+    source.assetManifest = assetManifest || null;
     canvas.nodes = nodes;
     return {cards:createdCards, collector};
+}
+
+function scheduleShotAssetAnalysis(collector){
+    if(!collector || collector.type !== 'shot-asset-collector') return;
+    collector.assetAnalysisStatus = 'queued';
+    collector.assetAnalysisQueuedAt = Date.now();
+    delete collector.assetAnalysisError;
+    scheduleSave();
+    render();
+    setTimeout(() => {
+        const current = nodes.find(item => item.id === collector.id && item.type === 'shot-asset-collector');
+        if(!current) return;
+        delete current.assetAnalysisQueuedAt;
+        analyzeShotAssetsWithAi(current, {force:true, automatic:true});
+    }, 0);
 }
 
 async function runScriptStoryboardSmartNode(nodeId){
@@ -3972,12 +4906,14 @@ async function runScriptStoryboardSmartNode(nodeId){
     node.lastAiError = '';
     render();
     let shots = [];
+    let aiPayload = null;
     const mode = 'segment';
     node.storyboardMode = 'segment';
     try {
         const helper = window.ScriptToStoryboard;
-        const provider = resolveChatProviderId(node.llmProvider || '');
-        const model = resolveChatModel(node.llmModel || '', provider);
+        const requestConfig = storyboardChatRequestConfig(node);
+        const {provider, model, executionContext} = requestConfig;
+        applyStoryboardChatExecutionContext(node, executionContext);
         const message = helper.buildMessage(script, node.storyboardPrompt, mode);
         const result = await fetch('/api/canvas-llm', {
             method:'POST',
@@ -4000,14 +4936,15 @@ async function runScriptStoryboardSmartNode(nodeId){
         node.llmModel = model;
         const parsed = helper.extractJson(result.text || '');
         if(!parsed) throw new Error('AI 未返回可解析的故事板 JSON');
+        aiPayload = parsed;
         shots = mode === 'segment' ? helper.normalizeStorySegment(parsed, script) : helper.normalizeShots(parsed);
         node.continuityReport = parsed?.continuityReport ? parsed.continuityReport : helper.buildContinuityReport(shots);
         node.referenceAssets = Array.isArray(parsed?.referenceAssets) ? parsed.referenceAssets : helper.mergeReferenceAssets(script, shots);
         if(!shots.length) throw new Error('AI 未返回可解析镜头 JSON');
     } catch(e) {
-        node.lastAiError = e.message || String(e);
+        node.lastAiError = `${storyboardChatExecutionLabel(storyboardChatExecutionContext(node))}：${e.message || String(e)}`;
         shots = [];
-        toast('AI 生成失败，未使用本地粗拆生成故事板');
+        toast(`故事板AI生成失败：${node.lastAiError.slice(0, 120)}`);
     } finally {
         node.running = false;
         node.runFinishedAt = nowMs();
@@ -4024,7 +4961,8 @@ async function runScriptStoryboardSmartNode(nodeId){
         node.shots = shots;
         node.continuityReport = helper?.buildContinuityReport?.(shots) || node.continuityReport;
         node.referenceAssets = helper?.mergeReferenceAssets?.(script, shots) || node.referenceAssets || [];
-        createSmartStoryboardOutputs(node, shots);
+        const created = createSmartStoryboardOutputs(node, shots, aiPayload);
+        scheduleShotAssetAnalysis(created.collector);
         selectedId = node.id;
         selectedIds = [];
         selectedImage = {nodeId:'', index:-1};
@@ -4035,7 +4973,7 @@ async function runScriptStoryboardSmartNode(nodeId){
 }
 
 function promptOptimizationSystemPrompt(mode='image', subjectLabel=''){
-    if(mode === 'asset') return `你是一名真人情感短剧的资产图提示词优化师。请把用户提供的${subjectLabel || '资产'}提示词整理成可直接用于生图模型的中文提示词。只保留主体身份或空间用途、必要外观、清晰视角、真实光线和干净背景；不要添加剧情，不要把道具写成人物，不要堆砌空泛画质词。人物资产要突出身份一致性与可辨认视角；场景资产要突出横版16:9空间结构与主要动线。原文有@参考资产名时必须原样保留；原文没有@标签时绝对不要自行添加。只输出优化后的提示词，不解释。`;
+    if(mode === 'asset') return `你是一名真人情感短剧的资产图提示词优化师。请把用户提供的${subjectLabel || '资产'}提示词和随后提供的结构化人物信息、关联故事卡摘要一起整理成可直接用于生图模型的中文提示词。人物资产必须优先使用结构化信息中的人物身份、年龄性别、职业、外貌体型、发型、服装、稳定气质、剧情年代或造型版本；合并多个故事卡中的稳定设定，但不能把矛盾的服装、年龄阶段或时期混在同一版本中。具体台词、旁白、口播内容、运镜、转场、场景动作和一次性情绪只能作为故事背景，绝对不能写入人物资产提示词。口播主讲人可以作为职业身份保留。只保留必要外观、清晰视角、真实光线和干净背景，不把服装、发型、气质或道具创建成另一个人物，不堆砌空泛画质词。原文有@参考资产名时必须原样保留；原文没有@标签时绝对不要自行添加。只输出优化后的提示词，不解释。`;
     if(mode === 'video-text') return `你是真人情感短剧的纯文本视频提示词优化师。输入没有必须依赖的首帧或参考图，因此要把人物、空间、时间、左右站位、动作起点、情绪推进、台词、运镜、光线、声音和结束状态写完整。不得改写剧情、台词、人物关系、服装和时长；按时间顺序写清起因、推进、落点，一个时间段只保留一个主要运镜。情绪必须转化为眼神、呼吸、嘴唇、手部、肌肉紧绷或身体停顿等可见表演。原文有@标签必须原样保留，原文没有时绝对不要新增。删除空泛画质词和重复限制。只输出优化后的中文提示词，不解释。`;
     if(mode === 'video-first-frame') return `你是真人情感短剧的首帧/首尾帧视频提示词优化师。参考画面已经确定人物外观、初始构图和空间，不要大段复述静态画面；重点写“从参考帧之后发生什么”：动作起点、时间推进、可见微表情、视线变化、主要运镜、声音与结束状态。若原文同时描述首帧和尾帧，要明确从首帧自然过渡到尾帧，保持身份、服装、左右位置、轴线和光线连续。不得改写剧情、台词、时长；所有原有@参考资产名必须原样保留并说明用途，绝对不要新增@标签。只输出优化后的中文提示词，不解释。`;
     if(mode === 'video-omni') return `你是真人情感短剧的全能参考视频提示词优化师。输入可能同时引用多个人物、场景和连续性画面。只使用原文已有的@参考资产名，并用简短语句明确每项参考控制什么：人物只锁定身份，场景只锁定空间，上一镜只锁定连续性；绝对不要新增、改名或合并@标签。随后按时间顺序写本段唯一剧情任务、人物动作与具体微表情、站位和视线、一个主要运镜、台词声音和结束状态。不得让参考图内容替代剧情，不得改写台词、人物关系、时长和既定站位。删除无必要细节和空泛画质词。只输出优化后的中文提示词，不解释。`;
@@ -4057,23 +4995,63 @@ function promptOptimizationConfigForNode(node){
         source = nodes.find(item => item.id === card?.sourceStoryboardId && item.type === 'script-storyboard') || null;
     }
     if(!source && node?.sourceStoryboardId) source = nodes.find(item => item.id === node.sourceStoryboardId && item.type === 'script-storyboard') || null;
+    const storedProvider = String(provider || source?.llmProvider || '').trim();
+    const providerId = storedProvider || resolveChatProviderId('');
+    const storedModel = String(model || source?.llmModel || '').trim();
+    const providerModels = typeof providerChatModels === 'function' ? providerChatModels(providerId) : [];
+    const resolvedModel = storedModel || (storedProvider ? (providerModels[0] || '') : resolveChatModel('', providerId));
+    const contextSource = node?.promptOptimizeExecutionContext
+        ? {...(source || node || {}), executionContext:node.promptOptimizeExecutionContext}
+        : (source || node || {});
+    const executionContext = storyboardChatExecutionContext(contextSource, {providerId, model:resolvedModel});
     if(source){
         provider = provider || source.llmProvider || '';
         model = model || source.llmModel || '';
     }
-    return {provider:resolveChatProviderId(provider), model:resolveChatModel(model, resolveChatProviderId(provider))};
+    return {provider:providerId, model:resolvedModel, executionContext, strictProvider:Boolean(storedProvider)};
 }
 
 function promptOptimizationConfigForCollector(collector){
     const card = shotAssetCollectorCards(collector)[0];
     const source = nodes.find(item => item.id === card?.sourceStoryboardId && item.type === 'script-storyboard');
-    const provider = resolveChatProviderId(source?.llmProvider || '');
-    return {provider, model:resolveChatModel(source?.llmModel || '', provider)};
+    const storedProvider = String(source?.llmProvider || collector?.llmProvider || '').trim();
+    const provider = storedProvider || resolveChatProviderId('');
+    const storedModel = String(source?.llmModel || collector?.llmModel || '').trim();
+    const providerModels = typeof providerChatModels === 'function' ? providerChatModels(provider) : [];
+    const model = storedModel || (storedProvider ? (providerModels[0] || '') : resolveChatModel('', provider));
+    const executionContext = storyboardChatExecutionContext(source || collector || {}, {providerId:provider, model});
+    return {provider, model, executionContext, strictProvider:Boolean(storedProvider)};
 }
 
 async function requestSmartCanvasLlmText(message, options={}){
-    const provider = resolveChatProviderId(options.provider || '');
-    const model = resolveChatModel(options.model || '', provider);
+    const inherited = options.executionContext && typeof options.executionContext === 'object' ? options.executionContext : {};
+    const requestedProvider = String(options.provider || inherited.providerId || '').trim();
+    const strictProvider = options.strictProvider === true;
+    const availableProviders = typeof chatApiProviders === 'function' ? chatApiProviders() : [];
+    if(strictProvider && requestedProvider && !availableProviders.some(item => item.id === requestedProvider)){
+        throw new Error(`接口配置“${inherited.providerName || requestedProvider}”不可用，请检查配置或额度。`);
+    }
+    const provider = strictProvider
+        ? (requestedProvider || resolveChatProviderId(''))
+        : resolveChatProviderId(requestedProvider);
+    const requestedModel = String(options.model || inherited.model || '').trim();
+    const providerModels = providerChatModels(provider);
+    if(strictProvider && requestedModel && providerModels.length && !providerModels.includes(requestedModel)){
+        throw new Error(`接口“${inherited.providerName || provider}”没有模型“${requestedModel}”，未自动切换模型。`);
+    }
+    const model = strictProvider
+        ? (requestedModel || providerModels[0] || '')
+        : resolveChatModel(requestedModel, provider);
+    if(strictProvider && !model){
+        throw new Error(`接口“${inherited.providerName || provider}”没有可用聊天模型，未自动切换模型。`);
+    }
+    const executionContext = storyboardChatExecutionContext({
+        llmProvider:provider,
+        llmModel:model,
+        llmProviderName:inherited.providerName,
+        llmConfigId:inherited.configId,
+        llmConfigName:inherited.configName
+    }, {providerId:provider, model});
     const result = await fetch('/api/canvas-llm', {
         method:'POST',
         headers:{'Content-Type':'application/json'},
@@ -4088,12 +5066,15 @@ async function requestSmartCanvasLlmText(message, options={}){
             system_prompt:String(options.systemPrompt || '').trim()
         })
     }).then(async response => {
-        if(!response.ok) throw new Error(await response.text());
+        if(!response.ok){
+            const detail = await response.text();
+            throw new Error(`${storyboardChatExecutionLabel(executionContext)}：${detail || '请求失败'}`);
+        }
         return response.json();
     });
     const text = String(result?.text || '').trim();
     if(!text) throw new Error('AI没有返回可用内容');
-    return {text, provider, model};
+    return {text, provider, model, executionContext};
 }
 
 async function requestPromptOptimization(text, options={}){
@@ -4137,14 +5118,45 @@ async function optimizeShotAssetPrompt(collector, demandKey){
     render();
     try {
         const ai = promptOptimizationConfigForCollector(collector);
-        const result = await requestPromptOptimization(current, {mode:'asset', subjectLabel:`${shotAssetPickerCategoryLabel(shotAssetDemandCategory(demand))}“${demand.label}”`, ...ai});
-        record.optimized = result.text;
-        record.current = result.text;
-        record.updatedAt = Date.now();
-        toast('资产提示词已由AI优化，可继续编辑');
-        scheduleSave();
-    } catch(error){
-        toast(`AI优化失败：${String(error?.message || error).slice(0, 100)}`);
+        const context = shotAssetPromptContextForDemand(collector, demand);
+        const contextMessage = [
+            '当前资产提示词：\n' + current,
+            '当前资产结构化信息：\n' + JSON.stringify(context, null, 2),
+            '关联故事卡摘要：\n' + JSON.stringify(context.cards || [], null, 2),
+            '请只输出整理后的可直接生图提示词。人物资产只保留稳定人物设定，不要输出上述摘要中的具体台词、运镜、转场、临时动作或一次性情绪。'
+        ].join('\n\n');
+        const result = await requestPromptOptimization(contextMessage, {mode:'asset', subjectLabel:`${shotAssetPickerCategoryLabel(shotAssetDemandCategory(demand))}“${demand.label}”`, ...ai});
+       record.optimized = result.text;
+       record.current = result.text;
+        record.generatedDefault = shotAssetDefaultGenerationPrompt(demand, collector);
+        record.aiOptimized = true;
+        record.userEdited = false;
+        record.needsReview = false;
+        record.pendingContextSignature = '';
+        record.contextSignature = String(context?.signature || JSON.stringify(context || {}));
+       record.updatedAt = Date.now();
+       toast('资产提示词已由AI优化，可继续编辑');
+       scheduleSave();
+   } catch(error){
+        const fallback = shotAssetDefaultGenerationPrompt(demand, collector);
+        const manuallyProtected = record.userEdited === true || record.locked === true
+            || (String(record.current || '').trim() !== String(record.original || '').trim() && !shotAssetPromptIsLegacyFixedTemplate(record.current));
+        if(!manuallyProtected){
+            const context = shotAssetPromptContextForDemand(collector, demand);
+            record.current = fallback;
+            record.original = fallback;
+            record.generatedDefault = fallback;
+            record.optimized = '';
+            record.aiOptimized = false;
+            record.needsReview = false;
+            record.pendingContextSignature = '';
+            record.contextSignature = String(context?.signature || JSON.stringify(context || {}));
+            record.updatedAt = Date.now();
+            scheduleSave();
+            toast(`AI优化失败，已使用结构化剧情信息回退：${String(error?.message || error).slice(0, 80)}`);
+        } else {
+            toast(`AI优化失败，已保留当前手动提示词：${String(error?.message || error).slice(0, 80)}`);
+        }
     } finally {
         delete collector.assetPromptOptimizingKey;
         render();
@@ -4179,10 +5191,14 @@ function createShotAssetPromptNode(collector, demandKey){
     const ai = promptOptimizationConfigForCollector(collector);
     target.promptOptimizeProvider = ai.provider;
     target.promptOptimizeModel = ai.model;
+    target.promptOptimizeExecutionContext = {...(ai.executionContext || {})};
     target.runSettings = posterFrameNormalizedRunSettings(smartStoryboardImageSettingsFor());
     target.promptOriginalText = prompt;
     target.promptUserLocked = false;
     target.runPrompt = prompt;
+    target.assetPromptContextSignature = String(record.contextSignature || '');
+    target.assetPromptUserEdited = record.userEdited === true;
+    target.assetPromptOptimized = record.aiOptimized === true;
     addConnection(collector.id, target.id, 'flow');
     selectedId = target.id;
     selectedIds = [];
@@ -4314,12 +5330,14 @@ function renderComposerPromptTools(node){
     const optimizing = node.promptOptimizing === true;
     const isVideo = composerNodeIsVideo(node);
     const videoProfile = isVideo ? resolvedPromptOptimizationVideoProfile(node) : '';
+    const aiConfig = promptOptimizationConfigForNode(node);
+    const aiLabel = storyboardChatExecutionLabel(aiConfig.executionContext);
     if(promptOptimizeProfileSelect){
         promptOptimizeProfileSelect.style.display = isVideo ? '' : 'none';
         promptOptimizeProfileSelect.value = ['auto','text','first-frame','omni'].includes(node.promptOptimizeProfile) ? node.promptOptimizeProfile : 'auto';
         promptOptimizeProfileSelect.disabled = optimizing || locked;
     }
-    const profileSuffix = isVideo ? ` · ${promptOptimizationVideoProfileLabel(videoProfile)}` : '';
+    const profileSuffix = [`${isVideo ? promptOptimizationVideoProfileLabel(videoProfile) : ''}`, `AI：${aiLabel}`].filter(Boolean).join(' · ');
     if(promptVersionStatus) promptVersionStatus.textContent = optimizing ? `AI正在优化提示词${profileSuffix}...` : locked ? `当前提示词已锁定${profileSuffix}` : optimized ? `AI优化稿已就绪${profileSuffix}，当前稿仍可编辑` : `当前提示词可编辑${profileSuffix}，AI优化不会直接覆盖`;
     if(promptOptimizeBtn){
         promptOptimizeBtn.disabled = optimizing || locked;
@@ -4354,6 +5372,7 @@ async function optimizeCurrentComposerPrompt(){
         node.promptOptimizedText = result.text;
         node.promptOptimizeProvider = result.provider;
         node.promptOptimizeModel = result.model;
+        node.promptOptimizeExecutionContext = {...(result.executionContext || ai.executionContext || {})};
         node.promptOptimizedProfile = profile;
         toast('AI优化稿已生成，确认后再应用');
         scheduleSave();
@@ -4403,13 +5422,25 @@ Object.assign(window, {
   shotAssetDemandKey,
   shotAssetDemandTypeLabel,
   shotAssetCardLabel,
-  shotAssetCleanCharacterName,
-  shotAssetLooksLikeNamedCharacter,
-  shotAssetCharacterNamesForCard,
+  shotAssetCharacterVariantGroups,
+  shotAssetCharacterContextForDemand,
+  shotAssetPromptContextForDemand,
+  shotAssetCharacterPromptFacts,
   shotAssetDemandItemsForCard,
   storyboardCardsFromNode,
   shotAssetCollectorConnectedNodes,
   shotAssetCollectorCards,
+  shotAssetAnalysisBatches,
+  mergeShotAssetAnalysisPayloads,
+  normalizeShotAssetAnalysisPayloadShape,
+  shotAssetAnalysisMessage,
+  shotAssetCollectorAnalysisSignature,
+  shotAssetCollectorAnalysisState,
+  shotAssetManifestFromPayload,
+  bindShotAssetManifestToCards,
+  normalizeShotAssetAiAnalysis,
+  analyzeShotAssetsWithAi,
+  scheduleShotAssetAnalysis,
   shotAssetCollectorDemands,
   shotAssetCandidateKey,
   shotAssetCollectorCanvasCandidates,
@@ -4440,6 +5471,8 @@ Object.assign(window, {
   shotAssetPickerCandidateGroup,
   shotAssetPickerCandidateLabel,
   shotAssetDefaultGenerationPrompt,
+  shotAssetPromptIsLegacyFixedTemplate,
+  shotAssetPromptRecordIsAutomatic,
   shotAssetPromptRecord,
   shotAssetPromptBoxHtml,
   shotAssetRecommendationItems,
@@ -4469,6 +5502,9 @@ Object.assign(window, {
   shotAssetCollectorBodyHtml,
   smartAssetHubBodyHtml,
   storyboardAiConfigForCard,
+  storyboardChatExecutionContext,
+  storyboardChatExecutionLabel,
+  storyboardChatRequestConfig,
   normalizeStoryboardDirectorReview,
   storyboardDirectorReviewHtml,
   reviewStoryboardCardWithAi,

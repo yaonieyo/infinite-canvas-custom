@@ -13,6 +13,7 @@
       "cameraType": "机位类型",
       "focalLength": "焦段",
       "subjects": "主体人物",
+      "characterProfiles": [{"name":"人物名称","ageGender":"年龄和性别","occupation":"职业或剧情身份","appearance":"外貌体型","hair":"发型","wardrobe":"服装","demeanor":"稳定气质","period":"剧情年代或时期"}],
       "emotionChange": "情绪变化",
       "emotionPerformance": "可执行的情绪表演：眉眼、嘴唇、呼吸、肌肉紧绷、视线和身体停顿",
       "cameraMove": "运镜方式",
@@ -50,7 +51,8 @@
 - 只要完成该镜头的场景表达需要更多帧，就继续增加独立帧
 - 静态镜头可以较少，有复杂走位、长动作或情绪推进的镜头可以输出更多帧
 
-每张故事板必须是独立帧描述，不能输出四宫格或九宫格合成图。只输出 JSON，不要输出 Markdown。`;
+每张故事板必须是独立帧描述，不能输出四宫格或九宫格合成图。
+人物资产字段规则：subjects 只能填写真实人物身份或人物名称，例如“40岁左右中国女性主讲人”或“阿野”。不要把服装、发型、外貌、动作、表情、气质、台词、旁白、运镜、镜头和场景描述拆成 subjects 中的人物；这些信息应写入对应的人物设定、visualExtract 或镜头字段。口播台词、旁白台词、人物台词和视频提示词绝对不能成为人物名称。只输出 JSON，不要输出 Markdown。`;
 
     const PURE_SCRIPT_PROMPT = `你是一名擅长真人情感短剧的导演、摄影指导和分镜设计师。
 用户输入的是纯剧本，可能只有人物、动作和台词，没有景别、机位、运镜、构图和镜头切换。
@@ -65,10 +67,12 @@
 - 对话不要默认双人正面并排；优先使用过肩、正反打、单人近景、反应镜头、前景遮挡、一虚一实、框中框、焦点转移。
 - 根据此刻观众应该看谁来决定画面主体；台词不一定拍说话者，可以拍听者反应。
 - 保持视线方向、人物轴线和空间关系一致，不添加剧本中不存在的重要剧情、台词或人物行为。
+- subjects 只写人物身份或人物名称，不要把服装、发型、外貌、动作、表情、气质、台词、旁白、运镜、镜头和场景描述写进 subjects；建议同时返回 characterProfiles，分别记录年龄性别、职业身份、外貌体型、发型、服装、稳定气质和剧情时期。
 
 每个镜头必须包含：
 - shotNumber、timeRange、purpose、sourceText
-- shotSize、cameraType、focalLength、subjects、emotionChange、cameraMove
+- shotSize、cameraType、focalLength、subjects、scene、props、emotionChange、cameraMove
+- characterProfiles：按人物身份记录稳定设定；不要把具体台词、运镜、一次性动作或临时情绪放入人物资产信息
 - transition、audio
 - visualExtract.start/middle/end/foreground/middleground/background/leftRight/focusRelation/eyeDirection/lightingComposition
 - frames：根据镜头变化生成足够数量的独立故事板帧，不固定 3/4/9
@@ -96,6 +100,7 @@
 每个故事段只生成一张故事板卡，在卡片内部提取足够的独立关键帧。帧数按该段剧情需要决定，不固定3、4、9张；每一帧都要能单独看懂当前画面和剧情推进，不能生成四宫格或九宫格合成图。
 
 不要添加原文没有的剧情。每张卡的视频提示词必须覆盖该卡对应的完整10—15秒连续内容，故事板帧只是其中的关键时刻，二者内容必须一致。
+人物资产字段规则：subjects 只能填写真实人物身份或人物名称，例如“40岁左右中国女性主讲人”或“阿野”。不要把服装、发型、外貌、动作、表情、气质、台词、旁白、运镜、镜头和场景描述拆成 subjects 中的人物；这些信息写入 characterProfiles、visualExtract 或其他对应镜头字段。口播台词、旁白台词、人物台词和视频提示词绝对不能成为人物名称。scene 只写真实物理场景，props 只写真实道具或产品，不要把台词、动作、镜头或抽象概念写入资产字段。
 
 情绪不能只写“悲伤、愤怒、紧张”等标签。必须写成可执行的表演：眉毛和眉心如何变化，眼神是否停住或躲开，眼眶和嘴唇状态，呼吸、喉结、下颌或面部肌肉是否紧绷，身体如何停顿或移动。只使用原文能支持的细节，不凭空添加夸张哭喊或新动作。
 
@@ -110,6 +115,9 @@
     "cameraType": "主要机位关系",
     "focalLength": "焦段或镜头感觉",
     "subjects": "主要人物",
+    "scene": "真实物理场景",
+    "props": ["真实道具或产品"],
+    "characterProfiles": [{"name":"人物名称","ageGender":"年龄和性别","occupation":"职业或剧情身份","appearance":"外貌体型","hair":"发型","wardrobe":"服装","demeanor":"稳定气质","period":"剧情年代或时期"}],
     "emotionChange": "情绪推进概括",
     "emotionPerformance": "可执行的详细情绪表演",
     "cameraMove": "主要运镜",
@@ -125,6 +133,9 @@
     "timeRange": "15-30秒",
     "sourceText": "该时间段对应的完整原文",
     "subjects": "该段主要人物",
+    "scene": "该段真实物理场景",
+    "props": [],
+    "characterProfiles": [],
     "frames": [],
     "videoPrompt": {"text":"覆盖故事段02完整时长的连续视频提示词"}
   }],
@@ -432,7 +443,8 @@
                 locked:Boolean(frame.locked),
                 imageUrl:text(frame.imageUrl)
             };
-            normalized.prompt = text(frame.prompt) || buildFramePrompt(shot, normalized, index);
+            // 按需生成帧提示词，避免把整段视频提示词复制到每一帧的画布数据中。
+            normalized.prompt = text(frame.prompt);
             return normalized;
         });
     }
@@ -453,6 +465,9 @@
             cameraType:text(src.cameraType || src.camera?.type) || inferCameraType(sourceText),
             focalLength:text(src.focalLength || src.lens || src.camera?.focalLength) || inferFocalLength(sourceText),
             subjects:text(src.subjects || src.subject || src.characters) || inferSubjects(sourceText),
+            scene:text(src.scene || src.location || src.setting || src.visualExtract?.background),
+            props:(Array.isArray(src.props) ? src.props : (Array.isArray(src.objects) ? src.objects : [])).map(item => text(item?.name || item?.label || item)).filter(Boolean),
+            characterProfiles:Array.isArray(src.characterProfiles) ? src.characterProfiles : (Array.isArray(src.characterDetails) ? src.characterDetails : []),
             emotionChange:text(src.emotionChange || src.emotion) || pickSentences(sourceText, ['情绪', '眼神', '呼吸', '慌乱', '崩溃', '发颤', '克制'], 2),
             emotionPerformance:text(src.emotionPerformance || src.performance) || detailedEmotion(sourceText, text(src.emotionChange || src.emotion)),
             cameraMove:text(src.cameraMove || src.motion || src.camera?.move) || inferCameraMove(sourceText),
@@ -621,6 +636,9 @@
             purpose:uniqueJoined(shots.map(shot => shot.purpose), '；') || `完成${storyRangeText(start, end)}内的连续剧情和情绪推进`,
             sourceText:source,
             subjects:uniqueJoined(shots.map(shot => shot.subjects)),
+            scene:uniqueJoined(shots.map(shot => shot.scene), '；'),
+            props:[...new Set(shots.flatMap(shot => Array.isArray(shot.props) ? shot.props : []))],
+            characterProfiles:shots.flatMap(shot => Array.isArray(shot.characterProfiles) ? shot.characterProfiles : []),
             emotionChange:uniqueJoined(shots.map(shot => shot.emotionChange), '；'),
             emotionPerformance:uniqueJoined(shots.map(shot => shot.emotionPerformance), '；'),
             cameraMove:uniqueJoined(shots.map(shot => shot.cameraMove), '；'),
