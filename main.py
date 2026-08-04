@@ -233,6 +233,11 @@ LOCAL_UPLOAD_DIR = os.path.join(ASSETS_DIR, "uploads")
 HISTORY_FILE = os.path.join(BASE_DIR, "history.json")
 API_ENV_FILE = os.path.join(BASE_DIR, "API", ".env")
 DATA_DIR = os.path.join(BASE_DIR, "data")
+PLUGINS_DIR = os.path.join(BASE_DIR, "plugins")
+PLUGIN_STATE_FILE = os.path.join(DATA_DIR, "canvas-plugins.json")
+PLUGIN_BACKUP_DIR = os.path.join(DATA_DIR, "canvas-plugin-backups")
+PLUGIN_API_VERSION = "1.0"
+PLUGIN_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,63}$")
 CONVERSATION_DIR = os.path.join(DATA_DIR, "conversations")
 CANVAS_DIR = os.path.join(DATA_DIR, "canvases")
 MEDIA_PREVIEW_DIR = os.path.join(DATA_DIR, "media_previews")
@@ -1580,12 +1585,177 @@ os.makedirs(STATIC_DIR, exist_ok=True)
 os.makedirs(WORKFLOW_DIR, exist_ok=True)
 os.makedirs(CONVERSATION_DIR, exist_ok=True)
 os.makedirs(CANVAS_DIR, exist_ok=True)
+os.makedirs(PLUGINS_DIR, exist_ok=True)
+os.makedirs(PLUGIN_BACKUP_DIR, exist_ok=True)
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")
 app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
+app.mount("/plugins", StaticFiles(directory=PLUGINS_DIR), name="plugins")
 
 # --- Pydantic 模型 ---
+
+class CanvasPluginStateUpdate(BaseModel):
+    enabled: bool
+
+
+def _safe_plugin_id(value: str) -> str:
+    plugin_id = str(value or "").strip().lower()
+    if not PLUGIN_ID_RE.fullmatch(plugin_id):
+        raise ValueError(f"插件 ID 不合法：{plugin_id or '(empty)'}")
+    return plugin_id
+
+
+def _safe_plugin_relative_path(value: str) -> str:
+    """只允许插件包内的相对文件路径，防止 manifest 穿越到项目外。"""
+    rel = str(value or "").replace("\\", "/").strip().lstrip("/")
+    parts = [part for part in rel.split("/") if part not in ("", ".")]
+    if not parts or any(part == ".." for part in parts):
+        raise ValueError(f"插件资源路径不安全：{value}")
+    return "/".join(parts)
+
+
+def _plugin_asset_url(plugin_id: str, value: str) -> str:
+    raw = str(value or "").strip()
+    if raw.startswith("/static/"):
+        return raw
+    if raw.startswith("/plugins/"):
+        parts = raw[len("/plugins/"):].split("/", 1)
+        if not parts or parts[0] != plugin_id or len(parts) != 2:
+            raise ValueError(f"插件资源不能引用其他插件：{value}")
+        return raw
+    rel = _safe_plugin_relative_path(raw)
+    return f"/plugins/{plugin_id}/{urllib.parse.quote(rel, safe='/._-~')}"
+
+
+def _plugin_asset_path(plugin_dir: str, value: str) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw or raw.startswith("http://") or raw.startswith("https://"):
+        return None
+    if raw.startswith("/static/"):
+        rel = raw[len("/static/"):]
+        root = os.path.abspath(STATIC_DIR)
+    elif raw.startswith("/plugins/"):
+        parts = raw[len("/plugins/"):].split("/", 1)
+        if not parts or parts[0] != os.path.basename(plugin_dir) or len(parts) != 2:
+            return None
+        rel = parts[1]
+        root = os.path.abspath(plugin_dir)
+    else:
+        try:
+            rel = _safe_plugin_relative_path(raw)
+        except ValueError:
+            return None
+        root = os.path.abspath(plugin_dir)
+    try:
+        path = os.path.abspath(os.path.join(root, *rel.replace("\\", "/").split("/")))
+        if os.path.commonpath([root, path]) != root:
+            return None
+        return path
+    except (OSError, ValueError):
+        return None
+
+
+def _read_canvas_plugin_state() -> Dict[str, Any]:
+    try:
+        with open(PLUGIN_STATE_FILE, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        return raw if isinstance(raw, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _write_canvas_plugin_state(state: Dict[str, Any]) -> None:
+    os.makedirs(os.path.dirname(PLUGIN_STATE_FILE), exist_ok=True)
+    temp_path = f"{PLUGIN_STATE_FILE}.tmp"
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump({"enabled": state.get("enabled", {})}, f, ensure_ascii=False, indent=2)
+    os.replace(temp_path, PLUGIN_STATE_FILE)
+
+
+def _plugin_host_compatible(manifest: Dict[str, Any]) -> bool:
+    required = str(manifest.get("hostApi") or PLUGIN_API_VERSION).strip()
+    required_major = re.match(r"^(\d+)", required)
+    current_major = re.match(r"^(\d+)", PLUGIN_API_VERSION)
+    return bool(required_major and current_major and required_major.group(1) == current_major.group(1))
+
+
+def discover_canvas_plugins() -> List[Dict[str, Any]]:
+    """读取本地插件清单；不执行插件代码。"""
+    records: List[Dict[str, Any]] = []
+    state = _read_canvas_plugin_state()
+    enabled_state = state.get("enabled") if isinstance(state.get("enabled"), dict) else {}
+    try:
+        children = sorted(os.listdir(PLUGINS_DIR))
+    except OSError:
+        children = []
+    for dirname in children:
+        plugin_dir = os.path.join(PLUGINS_DIR, dirname)
+        manifest_path = os.path.join(plugin_dir, "manifest.json")
+        if not os.path.isdir(plugin_dir) or not os.path.isfile(manifest_path):
+            continue
+        errors: List[str] = []
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+            if not isinstance(raw, dict):
+                raise ValueError("manifest.json 必须是对象")
+            plugin_id = _safe_plugin_id(raw.get("id"))
+            if plugin_id != dirname:
+                errors.append("插件目录名必须与 manifest.id 一致")
+            name = str(raw.get("name") or plugin_id).strip()[:80]
+            version = str(raw.get("version") or "0.0.0").strip()[:40]
+            entry = str(raw.get("entry") or "").strip()
+            if not entry:
+                errors.append("缺少 entry")
+            elif _plugin_asset_path(plugin_dir, entry) and not os.path.isfile(_plugin_asset_path(plugin_dir, entry)):
+                errors.append(f"入口文件不存在：{entry}")
+            styles = raw.get("styles") if isinstance(raw.get("styles"), list) else []
+            for style in styles:
+                style_path = _plugin_asset_path(plugin_dir, style)
+                if style_path and not os.path.isfile(style_path):
+                    errors.append(f"样式文件不存在：{style}")
+            compatible = _plugin_host_compatible(raw)
+            if not compatible:
+                errors.append(f"需要宿主 API {raw.get('hostApi')}，当前为 {PLUGIN_API_VERSION}")
+            enabled = bool(enabled_state.get(plugin_id, raw.get("enabledByDefault", True)))
+            status = "ready" if not errors else ("incompatible" if not compatible else "invalid")
+            records.append({
+                "id": plugin_id,
+                "name": name,
+                "version": version,
+                "description": str(raw.get("description") or "").strip()[:500],
+                "type": str(raw.get("type") or "frontend").strip()[:30],
+                "host_api": str(raw.get("hostApi") or PLUGIN_API_VERSION).strip(),
+                "entry_url": _plugin_asset_url(plugin_id, entry) if entry else "",
+                "style_urls": [_plugin_asset_url(plugin_id, item) for item in styles if str(item or "").strip()],
+                "wait_for_runtime": bool(raw.get("waitForRuntime", False)),
+                "features": [str(item).strip()[:100] for item in (raw.get("features") or []) if str(item).strip()][:30],
+                "legacy": bool(raw.get("legacy", False)),
+                "built_in": bool(raw.get("builtIn", False)),
+                "enabled": enabled,
+                "status": status,
+                "errors": errors,
+            })
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            records.append({
+                "id": dirname,
+                "name": dirname,
+                "version": "",
+                "description": "",
+                "type": "unknown",
+                "host_api": PLUGIN_API_VERSION,
+                "entry_url": "",
+                "style_urls": [],
+                "wait_for_runtime": False,
+                "features": [],
+                "legacy": False,
+                "built_in": False,
+                "enabled": False,
+                "status": "invalid",
+                "errors": [f"无法读取插件清单：{exc}"],
+            })
+    return records
 
 def current_app_version():
     version_file = os.path.join(BASE_DIR, "VERSION")
@@ -1894,6 +2064,117 @@ def app_info():
         },
         "update_notes": read_local_update_notes(version),
     }
+
+
+@app.get("/api/canvas-plugins")
+def canvas_plugins():
+    return {
+        "api_version": PLUGIN_API_VERSION,
+        "app_version": current_app_version(),
+        "plugins": discover_canvas_plugins(),
+    }
+
+
+@app.post("/api/canvas-plugins/refresh")
+def refresh_canvas_plugins():
+    return canvas_plugins()
+
+
+@app.put("/api/canvas-plugins/{plugin_id}")
+def update_canvas_plugin(plugin_id: str, payload: CanvasPluginStateUpdate):
+    plugin_id = _safe_plugin_id(plugin_id)
+    records = discover_canvas_plugins()
+    target = next((item for item in records if item.get("id") == plugin_id), None)
+    if not target:
+        raise HTTPException(status_code=404, detail="插件不存在")
+    state = _read_canvas_plugin_state()
+    enabled = state.get("enabled") if isinstance(state.get("enabled"), dict) else {}
+    enabled[plugin_id] = bool(payload.enabled)
+    state["enabled"] = enabled
+    _write_canvas_plugin_state(state)
+    return {
+        "ok": True,
+        "plugin": next((item for item in discover_canvas_plugins() if item.get("id") == plugin_id), target),
+    }
+
+
+@app.post("/api/canvas-plugins/install")
+async def install_canvas_plugin(package: UploadFile = File(...)):
+    filename = str(package.filename or "").lower()
+    if not filename.endswith(".zip"):
+        raise HTTPException(status_code=400, detail="插件包必须是 .zip 文件")
+    content = await package.read()
+    max_package_size = 30 * 1024 * 1024
+    if len(content) > max_package_size:
+        raise HTTPException(status_code=413, detail="插件包不能超过 30 MB")
+    staging = tempfile.mkdtemp(prefix=".canvas-plugin-", dir=PLUGINS_DIR)
+    moved_staging = False
+    try:
+        try:
+            archive = zipfile.ZipFile(BytesIO(content))
+        except zipfile.BadZipFile as exc:
+            raise HTTPException(status_code=400, detail="插件包不是有效的 ZIP 文件") from exc
+        with archive:
+            members = archive.infolist()
+            if len(members) > 600:
+                raise HTTPException(status_code=400, detail="插件包文件数量过多")
+            total_uncompressed = 0
+            for info in members:
+                name = str(info.filename or "").replace("\\", "/")
+                parts = [part for part in name.split("/") if part not in ("", ".")]
+                if name.startswith("/") or any(part == ".." for part in parts):
+                    raise HTTPException(status_code=400, detail="插件包包含不安全路径")
+                total_uncompressed += int(info.file_size or 0)
+                if int(info.file_size or 0) > 20 * 1024 * 1024 or total_uncompressed > 80 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="插件包解压后体积过大")
+            archive.extractall(staging)
+
+        root_manifest = os.path.join(staging, "manifest.json")
+        manifest_candidates = []
+        if os.path.isfile(root_manifest):
+            manifest_candidates.append(root_manifest)
+        else:
+            for child in os.listdir(staging):
+                candidate = os.path.join(staging, child, "manifest.json")
+                if os.path.isfile(candidate):
+                    manifest_candidates.append(candidate)
+        if len(manifest_candidates) != 1:
+            raise HTTPException(status_code=400, detail="插件包必须包含唯一的 manifest.json")
+        manifest_path = manifest_candidates[0]
+        source_root = os.path.dirname(manifest_path)
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+            plugin_id = _safe_plugin_id(manifest.get("id"))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=400, detail=f"插件 manifest 无效：{exc}") from exc
+        if os.path.basename(source_root) != plugin_id and source_root != staging:
+            raise HTTPException(status_code=400, detail="插件目录名必须与 manifest.id 一致")
+        if not str(manifest.get("entry") or "").strip():
+            raise HTTPException(status_code=400, detail="插件 manifest 缺少 entry")
+        entry_path = _plugin_asset_path(source_root, manifest.get("entry"))
+        if not entry_path or not os.path.isfile(entry_path):
+            raise HTTPException(status_code=400, detail="插件入口文件不存在")
+        if not _plugin_host_compatible(manifest):
+            raise HTTPException(status_code=400, detail=f"插件需要宿主 API {manifest.get('hostApi')}，当前为 {PLUGIN_API_VERSION}")
+
+        target_dir = os.path.join(PLUGINS_DIR, plugin_id)
+        if os.path.exists(target_dir):
+            backup_name = f"{plugin_id}-{datetime.datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            shutil.move(target_dir, os.path.join(PLUGIN_BACKUP_DIR, backup_name))
+        if source_root == staging:
+            shutil.move(staging, target_dir)
+            moved_staging = True
+        else:
+            shutil.move(source_root, target_dir)
+        return {
+            "ok": True,
+            "plugin_id": plugin_id,
+            "plugins": discover_canvas_plugins(),
+        }
+    finally:
+        if not moved_staging:
+            shutil.rmtree(staging, ignore_errors=True)
 
 def connectivity_probe(name: str, url: str, timeout: float = 5.0) -> Dict[str, Any]:
     started = time.time()

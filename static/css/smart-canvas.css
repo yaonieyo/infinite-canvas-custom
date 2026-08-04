@@ -19,6 +19,7 @@ html[data-studio-scale="off"].studio-scale-managed .smart-title,
 html[data-studio-scale="off"].studio-scale-managed .smart-log-toggle,
 html[data-studio-scale="off"].studio-scale-managed .smart-shortcut-toggle,
 html[data-studio-scale="off"].studio-scale-managed .smart-workflow-toggle,
+html[data-studio-scale="off"].studio-scale-managed .smart-plugin-toggle,
 html[data-studio-scale="off"].studio-scale-managed .asset-toggle,
 /* 注意：.composer 不能加进这份 zoom 列表——它在 .world 内用世界坐标定位，
    单独 zoom 会让坐标按 scale 重算，离原点越远偏移越大（小屏下直接飞出屏幕外） */
@@ -47,13 +48,14 @@ html[data-studio-scale="off"].studio-scale-managed .preview-modal {
 .smart-back:hover { transform:translateY(-1px); }
 .smart-back i { width:16px; height:16px; }
 .smart-title { position:absolute; left:22px; top:72px; z-index:10; max-width:min(420px, calc(100vw - 44px)); color:var(--muted); font-size:12px; font-weight:800; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; pointer-events:none; }
-.smart-log-toggle,.smart-shortcut-toggle,.smart-workflow-toggle { position:absolute; top:22px; z-index:56; width:96px; height:40px; padding:0 15px; border-radius:999px; background:var(--panel); color:var(--text); border:1px solid var(--line); box-shadow:0 14px 34px var(--shadow); backdrop-filter:blur(16px); display:flex; align-items:center; justify-content:center; gap:8px; font-size:12px; font-weight:750; white-space:nowrap; transition:transform .14s ease, border-color .14s ease; }
+.smart-log-toggle,.smart-shortcut-toggle,.smart-workflow-toggle,.smart-plugin-toggle { position:absolute; top:22px; z-index:56; width:96px; height:40px; padding:0 15px; border-radius:999px; background:var(--panel); color:var(--text); border:1px solid var(--line); box-shadow:0 14px 34px var(--shadow); backdrop-filter:blur(16px); display:flex; align-items:center; justify-content:center; gap:8px; font-size:12px; font-weight:750; white-space:nowrap; transition:transform .14s ease, border-color .14s ease; }
 .smart-log-toggle { right:130px; }
 .smart-shortcut-toggle { right:238px; }
 .smart-workflow-toggle { right:346px; }
-.smart-log-toggle:hover,.smart-shortcut-toggle:hover,.smart-workflow-toggle:hover { transform:translateY(-1px); border-color:var(--text); }
-.smart-log-toggle.active,.smart-shortcut-toggle.active,.smart-workflow-toggle.active { background:var(--strong); color:var(--strong-text); border-color:var(--strong); box-shadow:0 16px 38px var(--shadow); }
-.smart-log-toggle i,.smart-log-toggle svg,.smart-shortcut-toggle i,.smart-shortcut-toggle svg,.smart-workflow-toggle i,.smart-workflow-toggle svg { width:16px; height:16px; }
+.smart-plugin-toggle { right:454px; }
+.smart-log-toggle:hover,.smart-shortcut-toggle:hover,.smart-workflow-toggle:hover,.smart-plugin-toggle:hover { transform:translateY(-1px); border-color:var(--text); }
+.smart-log-toggle.active,.smart-shortcut-toggle.active,.smart-workflow-toggle.active,.smart-plugin-toggle.active { background:var(--strong); color:var(--strong-text); border-color:var(--strong); box-shadow:0 16px 38px var(--shadow); }
+.smart-log-toggle i,.smart-log-toggle svg,.smart-shortcut-toggle i,.smart-shortcut-toggle svg,.smart-workflow-toggle i,.smart-workflow-toggle svg,.smart-plugin-toggle i,.smart-plugin-toggle svg { width:16px; height:16px; }
 .image-node { position:absolute; width:260px; min-height:178px; border-radius:16px; background:transparent; border:0; box-shadow:none; overflow:visible; user-select:none; cursor:move; }
 body.smart-node-drag * { user-select:none !important; }
 body.smart-node-drag .image-node textarea,
@@ -1185,7 +1187,8 @@ input[type=range].smart-range::-webkit-slider-thumb { -webkit-appearance:none; w
     .smart-log-toggle { right:62px; width:40px; padding:0; }
     .smart-shortcut-toggle { right:110px; width:40px; padding:0; }
     .smart-workflow-toggle { right:158px; width:40px; padding:0; }
-    .smart-log-toggle span,.smart-shortcut-toggle span,.smart-workflow-toggle span,.asset-toggle span { display:none; }
+    .smart-plugin-toggle { right:206px; width:40px; padding:0; }
+    .smart-log-toggle span,.smart-shortcut-toggle span,.smart-workflow-toggle span,.smart-plugin-toggle span,.asset-toggle span { display:none; }
     .shortcut-modal { right:14px; top:118px; width:calc(100vw - 28px); max-height:calc(100vh - 132px); }
     .workflow-transfer-panel { right:14px; top:118px; width:calc(100vw - 28px); max-height:calc(100vh - 132px); }
 }

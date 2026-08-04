@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>画布插件管理</title>
+    <script src="/static/vendor/js/lucide.js?v=2026.08.01.1785544266"></script>
+    <style>
+        :root { color-scheme: light; --bg:#f5f7fb; --panel:#fff; --soft:#f8fafc; --line:#dfe5ee; --text:#111827; --muted:#64748b; --faint:#94a3b8; --strong:#111827; --shadow:rgba(15,23,42,.12); --ok:#047857; --warn:#b45309; --bad:#b91c1c; }
+        * { box-sizing:border-box; }
+        body { margin:0; min-height:100vh; background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; }
+        .page { width:min(1080px, calc(100vw - 36px)); margin:0 auto; padding:34px 0 60px; }
+        .head { display:flex; align-items:flex-start; justify-content:space-between; gap:24px; margin-bottom:24px; }
+        h1 { margin:0 0 8px; font-size:26px; letter-spacing:0; }
+        .lead { margin:0; color:var(--muted); font-size:13px; line-height:1.6; }
+        .actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; }
+        button { min-height:38px; padding:0 14px; border:1px solid var(--line); border-radius:10px; background:var(--panel); color:var(--text); font:inherit; font-size:12px; font-weight:800; cursor:pointer; display:inline-flex; align-items:center; justify-content:center; gap:7px; }
+        button:hover { border-color:#94a3b8; transform:translateY(-1px); }
+        button.primary { border-color:var(--strong); background:var(--strong); color:#fff; }
+        button:disabled { opacity:.5; cursor:not-allowed; transform:none; }
+        button svg { width:15px; height:15px; }
+        .status-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin-bottom:18px; }
+        .status-item { min-height:84px; padding:14px; border:1px solid var(--line); border-radius:12px; background:var(--panel); box-shadow:0 10px 30px var(--shadow); }
+        .status-label { color:var(--muted); font-size:11px; font-weight:800; }
+        .status-value { margin-top:8px; font-size:17px; font-weight:900; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .notice { display:flex; gap:10px; align-items:flex-start; margin-bottom:18px; padding:14px 16px; border:1px solid #cbd5e1; border-radius:12px; background:#f8fafc; color:var(--muted); font-size:12px; line-height:1.6; }
+        .notice svg { flex:0 0 auto; width:17px; height:17px; color:#475569; margin-top:2px; }
+        .section-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:20px 0 10px; }
+        .section-head h2 { margin:0; font-size:17px; }
+        #message { min-height:20px; color:var(--muted); font-size:12px; font-weight:700; }
+        .list { display:grid; gap:10px; }
+        .plugin { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:18px; align-items:center; padding:18px; border:1px solid var(--line); border-radius:14px; background:var(--panel); box-shadow:0 10px 30px rgba(15,23,42,.06); }
+        .plugin-main { min-width:0; }
+        .plugin-title { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:5px; }
+        .plugin-title strong { font-size:15px; }
+        .chip { display:inline-flex; align-items:center; min-height:22px; padding:0 8px; border-radius:999px; background:var(--soft); color:var(--muted); border:1px solid var(--line); font-size:10px; font-weight:850; }
+        .chip.ok { color:var(--ok); border-color:#a7f3d0; background:#ecfdf5; }
+        .chip.warn { color:var(--warn); border-color:#fde68a; background:#fffbeb; }
+        .chip.bad { color:var(--bad); border-color:#fecaca; background:#fef2f2; }
+        .plugin-desc { margin:0 0 9px; color:var(--muted); font-size:12px; line-height:1.55; }
+        .plugin-meta { display:flex; flex-wrap:wrap; gap:6px; color:var(--faint); font-size:10px; font-weight:750; }
+        .feature-list { display:flex; flex-wrap:wrap; gap:5px; margin-top:9px; }
+        .feature { padding:4px 7px; border-radius:7px; background:var(--soft); color:var(--muted); font-size:10px; }
+        .plugin-control { display:flex; align-items:center; gap:12px; }
+        .switch { position:relative; width:46px; height:26px; flex:0 0 auto; }
+        .switch input { position:absolute; opacity:0; pointer-events:none; }
+        .slider { position:absolute; inset:0; border-radius:999px; background:#cbd5e1; cursor:pointer; transition:.18s ease; }
+        .slider::after { content:""; position:absolute; width:20px; height:20px; top:3px; left:3px; border-radius:50%; background:#fff; box-shadow:0 2px 5px rgba(15,23,42,.18); transition:.18s ease; }
+        .switch input:checked + .slider { background:#2563eb; }
+        .switch input:checked + .slider::after { transform:translateX(20px); }
+        .switch input:disabled + .slider { opacity:.45; cursor:not-allowed; }
+        .empty { padding:40px 20px; text-align:center; border:1px dashed var(--line); border-radius:14px; color:var(--muted); background:var(--panel); }
+        @media (max-width:760px) { .page { width:min(100% - 24px, 640px); padding-top:22px; } .head { display:block; } .actions { justify-content:flex-start; margin-top:16px; } .status-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .plugin { grid-template-columns:1fr; } .plugin-control { justify-content:flex-end; } }
+        @media (max-width:420px) { .status-grid { grid-template-columns:1fr; } button { flex:1 1 auto; } }
+        .theme-dark { --bg:#0f172a; --panel:#172033; --soft:#1e293b; --line:#334155; --text:#f8fafc; --muted:#cbd5e1; --faint:#94a3b8; --strong:#f8fafc; --shadow:rgba(0,0,0,.22); }
+        .theme-dark button.primary { background:#f8fafc; color:#0f172a; border-color:#f8fafc; }
+        .theme-dark .notice { background:#172033; border-color:#334155; }
+        .theme-dark .chip.ok { background:rgba(16,185,129,.12); border-color:rgba(52,211,153,.35); }
+        .theme-dark .chip.warn { background:rgba(245,158,11,.12); border-color:rgba(251,191,36,.35); }
+        .theme-dark .chip.bad { background:rgba(239,68,68,.12); border-color:rgba(248,113,113,.35); }
+    </style>
+</head>
+<body>
+    <main class="page">
+        <header class="head">
+            <div>
+                <h1>无限画布插件</h1>
+                <p class="lead">独立管理画布定制功能。官方更新后只需要重新加载插件，不替换整份核心画布文件。</p>
+            </div>
+            <div class="actions">
+                <button id="refreshBtn" type="button"><i data-lucide="refresh-cw"></i><span>刷新状态</span></button>
+                <button id="installBtn" class="primary" type="button"><i data-lucide="package-plus"></i><span>导入插件 ZIP</span></button>
+                <button id="openCanvasBtn" type="button"><i data-lucide="external-link"></i><span>打开智能画布</span></button>
+                <input id="packageInput" type="file" accept=".zip,application/zip" hidden>
+            </div>
+        </header>
+        <section class="status-grid" aria-label="宿主状态">
+            <div class="status-item"><div class="status-label">宿主 API</div><div id="hostApi" class="status-value">-</div></div>
+            <div class="status-item"><div class="status-label">画布版本</div><div id="appVersion" class="status-value">-</div></div>
+            <div class="status-item"><div class="status-label">已发现插件</div><div id="pluginCount" class="status-value">-</div></div>
+            <div class="status-item"><div class="status-label">已启用插件</div><div id="enabledCount" class="status-value">-</div></div>
+        </section>
+        <div class="notice"><i data-lucide="shield-check"></i><span>插件安装器只安装带 manifest.json 的前端插件包，并且会把同名旧插件备份到 data/canvas-plugin-backups。后端接口暂时仍由主服务注册，避免插件包直接执行任意 Python 代码。</span></div>
+        <div class="section-head"><h2>插件列表</h2><div id="message" role="status"></div></div>
+        <section id="pluginList" class="list"></section>
+    </main>
+    <script>
+        (function () {
+            'use strict';
+            const pending = new Map();
+            const $ = id => document.getElementById(id);
+            const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+            const setMessage = (text, tone='') => { const el = $('message'); el.textContent = text || ''; el.style.color = tone === 'bad' ? '#b91c1c' : tone === 'ok' ? '#047857' : ''; };
+            const statusLabel = record => record.status === 'ready' ? '可用' : record.status === 'incompatible' ? '不兼容' : '不可用';
+            const statusClass = record => record.status === 'ready' ? 'ok' : record.status === 'incompatible' ? 'warn' : 'bad';
+            function render(payload) {
+                const records = Array.isArray(payload?.plugins) ? payload.plugins : [];
+                $('hostApi').textContent = payload?.api_version || '-';
+                $('appVersion').textContent = payload?.app_version || '-';
+                $('pluginCount').textContent = String(records.length);
+                $('enabledCount').textContent = String(records.filter(record => pending.has(record.id) ? pending.get(record.id) : record.enabled).length);
+                $('pluginList').innerHTML = records.length ? records.map(record => {
+                    const enabled = pending.has(record.id) ? pending.get(record.id) : record.enabled;
+                    const errors = (record.errors || []).map(escapeHtml).join('；');
+                    const features = (record.features || []).map(feature => `<span class="feature">${escapeHtml(feature)}</span>`).join('');
+                    return `<article class="plugin">
+                        <div class="plugin-main">
+                            <div class="plugin-title"><strong>${escapeHtml(record.name)}</strong><span class="chip ${statusClass(record)}">${statusLabel(record)}</span>${record.legacy ? '<span class="chip">兼容桥接</span>' : ''}</div>
+                            <p class="plugin-desc">${escapeHtml(record.description || '暂无说明')}</p>
+                            <div class="plugin-meta"><span>ID：${escapeHtml(record.id)}</span><span>版本：${escapeHtml(record.version || '-')}</span><span>宿主 API：${escapeHtml(record.host_api || '-')}</span>${errors ? `<span class="chip bad">${errors}</span>` : ''}</div>
+                            ${features ? `<div class="feature-list">${features}</div>` : ''}
+                        </div>
+                        <div class="plugin-control"><label class="switch" title="启用或停用插件"><input type="checkbox" data-plugin-id="${escapeHtml(record.id)}" ${enabled ? 'checked' : ''} ${record.status !== 'ready' ? 'disabled' : ''}><span class="slider"></span></label></div>
+                    </article>`;
+                }).join('') : '<div class="empty">还没有发现插件。可以导入一个包含 manifest.json 的 ZIP 插件包。</div>';
+                document.querySelectorAll('[data-plugin-id]').forEach(input => input.addEventListener('change', event => {
+                    pending.set(event.target.dataset.pluginId, event.target.checked);
+                    $('enabledCount').textContent = String(records.filter(record => pending.has(record.id) ? pending.get(record.id) : record.enabled).filter(Boolean).length);
+                    setMessage('设置已修改，点击“保存设置”会写入本地。');
+                }));
+                if (!$('saveBtn')) {
+                    const save = document.createElement('button');
+                    save.id = 'saveBtn'; save.type = 'button'; save.innerHTML = '<i data-lucide="save"></i><span>保存设置</span>';
+                    $('refreshBtn').after(save); save.addEventListener('click', () => saveSettings(payload));
+                    window.lucide?.createIcons();
+                }
+            }
+            async function load() {
+                setMessage('正在读取插件状态…');
+                try {
+                    const response = await fetch('/api/canvas-plugins', {cache:'no-store'});
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    const payload = await response.json();
+                    render(payload); setMessage('状态已刷新。', 'ok');
+                    return payload;
+                } catch (error) { setMessage(`读取失败：${error.message || error}`, 'bad'); return null; }
+            }
+            async function saveSettings(payload) {
+                const records = Array.isArray(payload?.plugins) ? payload.plugins : [];
+                const changes = records.filter(record => pending.has(record.id));
+                if (!changes.length) { setMessage('没有待保存的修改。'); return; }
+                setMessage('正在保存插件设置…');
+                try {
+                    for (const record of changes) {
+                        const response = await fetch(`/api/canvas-plugins/${encodeURIComponent(record.id)}`, {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled:pending.get(record.id)})});
+                        if (!response.ok) { const detail = await response.json().catch(() => ({})); throw new Error(detail.detail || `HTTP ${response.status}`); }
+                    }
+                    pending.clear(); await load(); setMessage('插件设置已保存，刷新智能画布后生效。', 'ok');
+                } catch (error) { setMessage(`保存失败：${error.message || error}`, 'bad'); }
+            }
+            async function install(file) {
+                if (!file) return;
+                setMessage(`正在导入 ${file.name}…`);
+                const form = new FormData(); form.append('package', file);
+                try {
+                    const response = await fetch('/api/canvas-plugins/install', {method:'POST', body:form});
+                    const payload = await response.json().catch(() => ({}));
+                    if (!response.ok) throw new Error(payload.detail || `HTTP ${response.status}`);
+                    pending.clear(); render(payload); setMessage(`插件 ${payload.plugin_id} 已安装，刷新智能画布后生效。`, 'ok');
+                } catch (error) { setMessage(`导入失败：${error.message || error}`, 'bad'); }
+            }
+            $('refreshBtn').addEventListener('click', load);
+            $('installBtn').addEventListener('click', () => $('packageInput').click());
+            $('packageInput').addEventListener('change', event => { install(event.target.files?.[0]); event.target.value = ''; });
+            $('openCanvasBtn').addEventListener('click', () => { window.location.href = '/static/smart-canvas.html'; });
+            window.StudioI18n?.apply?.(); window.lucide?.createIcons(); load();
+        })();
+    </script>
+</body>
+</html>
