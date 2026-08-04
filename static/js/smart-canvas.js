@@ -2608,10 +2608,18 @@ function videoProviderById(providerId){
 }
 function hasFixedVideoDuration(providerId){
     const id = String(providerId || '').trim().toLowerCase();
+    const pluginProvider = window.CanvasPluginHost?.getGenerationProvider?.(id);
+    if(pluginProvider?.fixedDuration === true || Array.isArray(pluginProvider?.durationOptions)) return true;
     const provider = (apiProviders || []).find(item => String(item?.id || '').trim().toLowerCase() === id);
     return id === 'doubao-video' || id === 'doubao-pool' || String(provider?.protocol || '').trim().toLowerCase() === 'doubao-pool';
 }
 function normalizeSmartVideoDuration(value, providerId=settings.videoProvider){
+    const pluginProvider = window.CanvasPluginHost?.getGenerationProvider?.(providerId);
+    const allowed = Array.isArray(pluginProvider?.durationOptions) ? pluginProvider.durationOptions.map(Number).filter(Number.isFinite) : [];
+    if(allowed.length){
+        const numeric = Number(value);
+        return allowed.includes(numeric) ? numeric : allowed[0];
+    }
     if(hasFixedVideoDuration(providerId)) return Number(value) === 10 ? 10 : 5;
     return Math.max(1, Math.min(60, Number(value) || 5));
 }
@@ -8148,7 +8156,7 @@ function syncPosterFramePromptFromElement(node, promptEl){
     else delete node.promptImageRefs;
     delete node.lastError;
 }
-function bindPromptNodeMentionInput(textEl, node){
+function bindLegacyPromptNodeMentionInput(textEl, node){
     if(!textEl || !node) return;
     const activate = () => { activeMentionInputEl = textEl; };
     textEl.addEventListener('focus', () => { activate(); saveMentionRange(); });
@@ -8175,7 +8183,7 @@ function bindPromptNodeMentionInput(textEl, node){
         if(event.key === 'Escape') closeMentionPicker();
     });
 }
-function bindPosterFrameMentionInput(promptEl, node){
+function bindLegacyPosterFrameMentionInput(promptEl, node){
     if(!promptEl || !node) return;
     const activate = () => { activeMentionInputEl = promptEl; };
     promptEl.addEventListener('focus', () => { activate(); saveMentionRange(); });
@@ -8197,6 +8205,28 @@ function bindPosterFrameMentionInput(promptEl, node){
         }
         if(event.key === 'Escape') closeMentionPicker();
     });
+}
+function bindPromptNodeMentionInput(textEl, node){
+    const extension = window.CanvasPluginHost?.getPromptEditorExtension?.('reference-mentions', node);
+    if(extension?.bind){
+        try {
+            if(extension.bind(textEl, node, {kind:'prompt-node'}) !== false) return;
+        } catch(error){
+            console.warn('[smart-canvas] @参考图插件绑定失败，回退核心兼容逻辑', error);
+        }
+    }
+    bindLegacyPromptNodeMentionInput(textEl, node);
+}
+function bindPosterFrameMentionInput(promptEl, node){
+    const extension = window.CanvasPluginHost?.getPromptEditorExtension?.('reference-mentions', node);
+    if(extension?.bind){
+        try {
+            if(extension.bind(promptEl, node, {kind:'poster-frame'}) !== false) return;
+        } catch(error){
+            console.warn('[smart-canvas] @参考图插件绑定失败，回退核心兼容逻辑', error);
+        }
+    }
+    bindLegacyPosterFrameMentionInput(promptEl, node);
 }
 function bindPromptNodeControls(el, node){
     el.querySelectorAll('.prompt-node-control, .prompt-node-pill').forEach(control => {
@@ -16795,6 +16825,14 @@ function createNodeFromMenu(type){
     closeCreateMenu();
     if(type === 'group') return createSmartGroupNode(p.x - 170, p.y - 110);
     if(type === 'poster-frame') {
+        const pluginHost = window.CanvasPluginHost;
+        const pluginNode = pluginHost?.invokeNodeType?.('poster-frame', 'create', p, {groupId});
+        if(pluginNode){
+            createMenuGroupId = groupId;
+            addCreatedNodeToMenuGroup(pluginNode);
+            createMenuGroupId = '';
+            return pluginNode;
+        }
         const node = createPosterFrameBatchNode(p.x - 210, p.y - 280);
         createMenuGroupId = groupId;
         addCreatedNodeToMenuGroup(node);
@@ -18291,6 +18329,27 @@ window.addEventListener('studio-lang-change', () => {
     if(promptTemplatePanel?.classList?.contains('open')) renderPromptTemplatePanel();
     render();
 });
+window.registerCanvasCoreApi = function(){
+    return {
+        createPosterFrameNode: (...args) => createPosterFrameNode(...args),
+        createPosterFrameBatchNode: (...args) => createPosterFrameBatchNode(...args),
+        createPosterFramesFromItems: (...args) => createPosterFramesFromItems(...args),
+        isPosterFrameNode,
+        isPosterFrameBatchNode,
+        mentionController: {
+            activate(element){ activeMentionInputEl = element; },
+            saveRange: saveMentionRange,
+            maybeOpenPicker: maybeOpenMentionPicker,
+            closePicker: closeMentionPicker,
+            isUndoArmed: () => promptMentionUndoArmed,
+            setUndoArmed(value){ promptMentionUndoArmed = Boolean(value); },
+            canUndo: () => undoStack.length > 0,
+            undo: performUndo,
+            selectNode(id){ selectedId = id || ''; },
+            updateComposer
+        }
+    };
+};
 window.onload = async () => {
     applyTheme(localStorage.getItem('studio_theme') || localStorage.getItem('canvas_theme') || 'light');
     loadPromptPresets();

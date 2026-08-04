@@ -1,0 +1,21 @@
+{
+  "id": "poster-frame",
+  "name": "批量画框与提示词卡",
+  "version": "2026.08.04.1",
+  "hostApi": "1.0",
+  "type": "frontend-node-plugin",
+  "enabledByDefault": true,
+  "builtIn": true,
+  "legacy": false,
+  "waitForRuntime": true,
+  "surfaces": ["smart-canvas"],
+  "entry": "entry.js",
+  "styles": [],
+  "description": "注册批量画框节点、拆分后的产品海报提示词卡节点和画幅入口。现有节点数据继续由核心兼容层渲染。",
+  "features": [
+    "右键画框节点",
+    "AI 拆分产品海报提示词",
+    "产品海报提示词卡",
+    "接口、模型、画幅和清晰度设置"
+  ]
+}

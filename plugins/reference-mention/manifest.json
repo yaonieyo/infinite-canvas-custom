@@ -1,0 +1,21 @@
+{
+  "id": "reference-mention",
+  "name": "@参考图",
+  "version": "2026.08.04.1",
+  "hostApi": "1.0",
+  "type": "frontend-editor-plugin",
+  "enabledByDefault": true,
+  "builtIn": true,
+  "legacy": false,
+  "waitForRuntime": true,
+  "surfaces": ["smart-canvas"],
+  "entry": "entry.js",
+  "styles": [],
+  "description": "为提示词节点、产品海报画框和故事板提示词卡注册统一的 @参考图编辑器。图片标签保存真实资源绑定，不改动现有生图请求格式。",
+  "features": [
+    "当前画布参考图选择",
+    "真实资源 ID 绑定",
+    "删除标签同步解绑",
+    "所有提示词卡和画框可用"
+  ]
+}

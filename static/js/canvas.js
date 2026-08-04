@@ -745,10 +745,18 @@ function providerVideoModels(providerId){
 }
 function hasFixedVideoDuration(providerId){
     const id = String(providerId || '').trim().toLowerCase();
+    const pluginProvider = window.CanvasPluginHost?.getGenerationProvider?.(id);
+    if(pluginProvider?.fixedDuration === true || Array.isArray(pluginProvider?.durationOptions)) return true;
     const provider = apiProviders.find(item => String(item?.id || '').trim().toLowerCase() === id);
     return id === 'doubao-video' || id === 'doubao-pool' || String(provider?.protocol || '').trim().toLowerCase() === 'doubao-pool';
 }
 function normalizeVideoDurationForProvider(value, providerId){
+    const pluginProvider = window.CanvasPluginHost?.getGenerationProvider?.(providerId);
+    const allowed = Array.isArray(pluginProvider?.durationOptions) ? pluginProvider.durationOptions.map(Number).filter(Number.isFinite) : [];
+    if(allowed.length){
+        const numeric = Number(value);
+        return allowed.includes(numeric) ? numeric : allowed[0];
+    }
     if(hasFixedVideoDuration(providerId)) return Number(value) === 10 ? 10 : 5;
     return Math.max(1, Math.min(60, Number(value || 5)));
 }

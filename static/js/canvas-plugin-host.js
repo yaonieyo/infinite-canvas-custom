@@ -11,6 +11,11 @@
     const loadedScripts = new Map();
     const loadedStyles = new Map();
     const runtimePlugins = new Map();
+    const nodeTypes = new Map();
+    const promptEditorExtensions = new Map();
+    const generationProviders = new Map();
+    const capabilities = new Map();
+    let coreApi = null;
 
     function on(eventName, listener) {
         if (typeof listener !== 'function') return () => {};
@@ -71,6 +76,27 @@
         }
     }
 
+    function normalizedKey(value) {
+        return String(value || '').trim().toLowerCase();
+    }
+
+    function registerDescriptor(collection, id, descriptor, eventName) {
+        const key = normalizedKey(id || descriptor?.id);
+        if (!key || !descriptor || typeof descriptor !== 'object') return false;
+        const normalized = {...descriptor, id:key};
+        collection.set(key, normalized);
+        emit(eventName, normalized);
+        return true;
+    }
+
+    function pluginEnabled(pluginId) {
+        const id = normalizedKey(pluginId);
+        const record = host.plugins.get(id);
+        if (record) return record.enabled === true && record.status === 'ready' && record.loaded !== false;
+        const runtime = runtimePlugins.get(id);
+        return runtime ? runtime.ready !== false : true;
+    }
+
     function waitForRuntimePlugin(pluginId, timeoutMs = 5000) {
         if (!pluginId) return Promise.resolve();
         const started = Date.now();
@@ -95,6 +121,69 @@
         loadScript,
         loadStyle,
         requestRender: requestCanvasRender,
+        surface: String(document.body?.dataset?.canvasSurface || (location.pathname.includes('smart-canvas') ? 'smart-canvas' : 'canvas')),
+        registerCoreApi(api) {
+            if (!api || typeof api !== 'object') return false;
+            coreApi = {...(coreApi || {}), ...api};
+            window.CanvasCoreApi = coreApi;
+            emit('core:ready', coreApi);
+            return true;
+        },
+        getCoreApi() {
+            return coreApi || window.CanvasCoreApi || null;
+        },
+        registerNodeType(type, descriptor = {}) {
+            return registerDescriptor(nodeTypes, type, {...descriptor, type:normalizedKey(type)}, 'node-type:registered');
+        },
+        getNodeType(type) {
+            const key = normalizedKey(type);
+            const descriptor = nodeTypes.get(key);
+            return descriptor && pluginEnabled(descriptor.pluginId || descriptor.owner) ? descriptor : null;
+        },
+        invokeNodeType(type, method, ...args) {
+            const descriptor = host.getNodeType(type);
+            const handler = descriptor && descriptor[method];
+            if (typeof handler !== 'function') return null;
+            try { return handler(...args); } catch (error) {
+                console.error(`[CanvasPluginHost] node type ${type}`, error);
+                emit('node-type:error', {type, method, error});
+                return null;
+            }
+        },
+        registerPromptEditorExtension(id, descriptor = {}) {
+            return registerDescriptor(promptEditorExtensions, id, descriptor, 'prompt-editor:registered');
+        },
+        getPromptEditorExtension(id, node) {
+            const exact = normalizedKey(id);
+            const candidates = exact ? [promptEditorExtensions.get(exact)] : [...promptEditorExtensions.values()];
+            return candidates.find(item => {
+                if (!item || !pluginEnabled(item.pluginId || item.owner)) return false;
+                if (typeof item.matches !== 'function') return true;
+                try { return item.matches(node) === true; } catch (error) {
+                    console.error(`[CanvasPluginHost] prompt editor ${item.id}`, error);
+                    return false;
+                }
+            }) || null;
+        },
+        registerGenerationProvider(id, descriptor = {}) {
+            return registerDescriptor(generationProviders, id, descriptor, 'generation-provider:registered');
+        },
+        getGenerationProvider(id) {
+            const key = normalizedKey(id);
+            const descriptor = generationProviders.get(key);
+            return descriptor && pluginEnabled(descriptor.pluginId || descriptor.owner) ? descriptor : null;
+        },
+        registerCapability(id, descriptor = {}) {
+            return registerDescriptor(capabilities, id, descriptor, 'capability:registered');
+        },
+        getCapability(id) {
+            const key = normalizedKey(id);
+            const descriptor = capabilities.get(key);
+            return descriptor && pluginEnabled(descriptor.pluginId || descriptor.owner) ? descriptor : null;
+        },
+        isPluginEnabled(pluginId) {
+            return pluginEnabled(pluginId);
+        },
         registerRuntime(plugin) {
             if (!plugin || !plugin.id) return false;
             runtimePlugins.set(String(plugin.id), plugin);
@@ -147,7 +236,14 @@
                 }
                 const records = Array.isArray(payload?.plugins) ? payload.plugins : [];
                 host.manifest = payload;
-                for (const record of records) await host.loadPlugin(record);
+                for (const record of records) {
+                    const surfaces = Array.isArray(record.surfaces) ? record.surfaces : [];
+                    if (surfaces.length && !surfaces.includes(host.surface)) {
+                        host.plugins.set(String(record.id || ''), {...record, loaded:false, skipped:true});
+                        continue;
+                    }
+                    await host.loadPlugin(record);
+                }
                 requestCanvasRender();
                 emit('host:ready', payload);
                 return payload;
@@ -159,5 +255,11 @@
     window.CanvasPluginHost = host;
     // 给后续插件一个短名称，同时保留旧代码不受影响。
     window.canvasPlugins = host;
+    // smart-canvas.js / canvas.js may expose this before the host script is loaded.
+    if (typeof window.registerCanvasCoreApi === 'function') {
+        try { host.registerCoreApi(window.registerCanvasCoreApi(host) || {}); } catch (error) {
+            console.warn('[CanvasPluginHost] 核心 API 注册失败', error);
+        }
+    }
     host.boot();
 })();

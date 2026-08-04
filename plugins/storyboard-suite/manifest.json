@@ -8,14 +8,12 @@
   "builtIn": true,
   "legacy": true,
   "waitForRuntime": true,
+  "surfaces": ["smart-canvas"],
   "entry": "entry.js",
   "styles": [],
-  "description": "加载故事板、资产收集器、批量画框和画布提示词扩展。当前通过兼容桥接接入，后续按宿主 API 逐项拆分。",
+  "description": "加载剧本转故事板和故事板资产收集器兼容桥。批量画框、@参考图和豆包视频已分别注册为独立插件。",
   "features": [
     "剧本转故事板",
-    "故事板资产收集器",
-    "批量画框与提示词卡",
-    "@参考图",
-    "画布视频与图片节点"
+    "故事板资产收集器"
   ]
 }

@@ -1,0 +1,22 @@
+{
+  "id": "doubao-video",
+  "name": "豆包视频接口",
+  "version": "2026.08.04.1",
+  "hostApi": "1.0",
+  "type": "frontend-provider-plugin",
+  "enabledByDefault": true,
+  "builtIn": true,
+  "legacy": false,
+  "waitForRuntime": true,
+  "surfaces": ["smart-canvas", "canvas"],
+  "entry": "entry.js",
+  "styles": [],
+  "description": "注册豆包账号池视频提供商，固定支持 5 秒和 10 秒，并复用主服务的参考图、提示词和回传接口。",
+  "features": [
+    "doubao-pool",
+    "generate_doubao_pool_video",
+    "5 秒 / 10 秒",
+    "参考图和提示词提交",
+    "去水印结果回传"
+  ]
+}

@@ -19,6 +19,9 @@ python/
 # Generated CLI output
 CLI/windows/openai/output/
 
+# Exported standalone canvas plugin packages
+dist/canvas-plugins/
+
 # Python and application caches
 __pycache__/
 *.py[cod]
@@ -32,4 +35,3 @@ __pycache__/
 .DS_Store
 Thumbs.db
 desktop.ini
-
